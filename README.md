@@ -100,7 +100,7 @@ hash of its settings files in `run.json`.
 | [FluidVoice](https://github.com/altic-dev/FluidVoice)  | 1.6.13                       | Right Option, toggle                     | Parakeet TDT 0.6B, Core ML (~450 MB)         |
 | [VoiceInk](https://github.com/Beingpax/VoiceInk)       | 2.27                         | chosen in onboarding                     | Parakeet TDT 0.6B v3, Core ML (~450 MB)      |
 | [OpenWhispr](https://github.com/OpenWhispr/openwhispr) | 1.12.0                       | Fn (Globe), toggle                       | its onboarding's recommendation              |
-| [Vocet](https://github.com/gargankit90/dictation-app)  | built at the config's commit | Right Option, hold                       | OrukQwen 1.7B + Gemma 4 E2B cleanup          |
+| [Vocet](https://github.com/vocetlabs/dictation-app)  | built at the config's commit | Right Option, hold                       | OrukQwen 1.7B + Gemma 4 E2B cleanup          |
 
 Corrections to an app's configuration are welcome from its maintainers.
 

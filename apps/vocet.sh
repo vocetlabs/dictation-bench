@@ -3,7 +3,7 @@
 # hold to talk. The app is built from source (BENCH_VOCET_APP=<path to Vocet.app>), since no signed
 # release exists for the commit under test.
 . "$(dirname "$0")/common.sh"
-repo=https://github.com/gargankit90/dictation-app
+repo=https://github.com/vocetlabs/dictation-app
 commit=a7c7a46d94662d68623c6e630a147714e7f6e274
 app=${BENCH_VOCET_APP:-}
 if [ -z "$app" ]; then  # build the pinned commit, ad-hoc signed (the release certificate isn't public)

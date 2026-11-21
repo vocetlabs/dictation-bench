@@ -7,7 +7,7 @@
   "mode": "hold",
   "release": {
     "build": "apps/vocet.sh builds the commit below (npm ci && npm run tauri build -- --bundles app, ad-hoc signed) unless BENCH_VOCET_APP points at a build",
-    "repo": "https://github.com/gargankit90/dictation-app",
+    "repo": "https://github.com/vocetlabs/dictation-app",
     "commit": "a7c7a46"
   },
   "model": {
