@@ -1,0 +1,102 @@
+# The bench on GitHub-hosted macOS runners: one job per app, the app's signed release (or source build) set
+# up without a person, a synthetic smoke dictation as the gate, then (full) all clips, scored in the job.
+# Accuracy only: a runner's speed is not representative. Uploads numbers only (score.json, run.json,
+# judge.json): never audio, references, drafts or corrections.
+#
+# A push smoke-tests the apps in ci-plan.json. A manual run picks one app (or all) and smoke or full.
+# The Judge step computes ZER/AMEND when the repository has a JUDGE_API_KEY secret, and says
+# "judge metrics: not computed (no key)" otherwise.
+name: Bench
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      app:
+        description: App (apps/<app>.json with hosted_setup true), or all of them
+        type: choice
+        options: [all, handy, muesli, fluidvoice, vocet]
+      size:
+        description: smoke (one synthetic dictation) or full (all clips)
+        type: choice
+        options: [smoke, full]
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      apps: ${{ steps.plan.outputs.apps }}
+      size: ${{ steps.plan.outputs.size }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: plan
+        env:
+          APP: ${{ inputs.app }}
+          SIZE: ${{ inputs.size }}
+        run: |
+          python3 - <<'PY' >>"$GITHUB_OUTPUT"
+          import glob, json, os
+          app, size = os.environ.get("APP", ""), os.environ.get("SIZE", "")
+          plan = json.load(open("ci-plan.json"))
+          hosted = sorted(json.load(open(p))["name"] for p in glob.glob("apps/*.json") if json.load(open(p)).get("hosted_setup"))
+          apps = plan["apps"] if not app else (hosted if app == "all" else [app])
+          print("apps=" + json.dumps(apps))
+          print("size=" + (size or plan["size"]))
+          PY
+
+  bench:
+    needs: plan
+    name: ${{ matrix.app }} ${{ needs.plan.outputs.size }}
+    runs-on: macos-15
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.plan.outputs.apps) }}
+    env:
+      APP: ${{ matrix.app }}
+      SIZE: ${{ needs.plan.outputs.size }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Machine
+        run: |
+          command -v uv >/dev/null || brew install --quiet uv
+          ./bench machine --ci
+      - name: App
+        run: |
+          ./bench setup --app "$APP" --ci
+          ./bench windows
+      - name: Clips
+        if: env.SIZE == 'full'
+        run: ./bench fetch
+      - name: Run
+        run: ./bench run --app "$APP" "--$SIZE" --accuracy-only --machine github-macos-15 -o out/run
+      - name: Judge
+        if: env.SIZE == 'full'
+        env:
+          JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}
+        run: ./bench judge out/run
+      - name: Summary
+        if: always() && env.SIZE == 'full'
+        run: |
+          [ -f out/run/score.json ] || { echo "no score.json" >>"$GITHUB_STEP_SUMMARY"; exit 1; }
+          ./bench verify out/run/score.json
+          ./bench table out/run/score.json >>"$GITHUB_STEP_SUMMARY"
+      - name: Upload numbers
+        if: always() && env.SIZE == 'full'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-${{ env.APP }}
+          path: |
+            out/run/score.json
+            out/run/run.json
+            out/run/judge.json
+          if-no-files-found: warn
