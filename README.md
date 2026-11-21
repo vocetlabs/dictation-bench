@@ -55,7 +55,7 @@ is at least 10% of the clip's loud frames.
 ## Run it on GitHub (accuracy)
 
 Fork the repository, enable Actions, and run the **Bench** workflow with an app and `smoke` (one synthetic
-dictation) or `full` (all clips). A push runs `ci-plan.json`. A GitHub-hosted macOS runner has a logged-in session, so the job installs
+dictation) or `full` (all clips). A push smoke-tests the apps in `ci-plan.json`. A GitHub-hosted macOS runner has a logged-in session, so the job installs
 BlackHole, installs the app's signed release, sets it up as its onboarding would, grants its permissions,
 runs the smoke dictation as a gate, then the clips, and scores in the job. Runs there are accuracy-only
 (`--accuracy-only`: a longer text deadline, no latency), since a shared runner's speed says little about a
@@ -100,7 +100,7 @@ hash of its settings files in `run.json`.
 | [Muesli](https://github.com/Muesli-HQ/muesli) | 0.8.6 | Right Option, hold | Parakeet Unified EN 0.6B, Core ML (~565 MB) |
 | [FluidVoice](https://github.com/altic-dev/FluidVoice) | 1.6.13 | Right Option, toggle | Parakeet TDT 0.6B, Core ML (~450 MB) |
 | [VoiceInk](https://github.com/Beingpax/VoiceInk) | 2.27 | chosen in onboarding | Parakeet TDT 0.6B v3, Core ML (~450 MB) |
-| [OpenWhispr](https://github.com/OpenWhispr/openwhispr) | 1.12.0 | Fn (Globe), toggle | its onboarding's recommendation |
+| [OpenWhispr](https://github.com/OpenWhispr/openwhispr) | 1.12.0 | Right Option (its Globe/Fn default can't be pressed by software), toggle | Parakeet Unified EN 0.6B, sherpa-onnx int8 (631 MB) |
 | [Vocet](https://github.com/vocetlabs/dictation-app) | built at the config's commit | Right Option, hold | OrukQwen 1.7B + Gemma 4 E2B cleanup |
 
 Corrections to an app's configuration are welcome from its maintainers.
