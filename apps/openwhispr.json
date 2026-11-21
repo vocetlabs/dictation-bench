@@ -21,5 +21,5 @@
   "notes": "Activation tap (default). Key: Right Option instead of its Globe/Fn default, which software can't press. Settings written to its localStorage as onboarding would.",
   "hosted_setup": true,
   "settings_files": [],
-  "logs": "~/Library/Logs/OpenWhispr/*.log"
+  "logs": "~/Library/Application Support/OpenWhispr/logs/debug-*.log"
 }
