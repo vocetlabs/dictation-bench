@@ -12,13 +12,14 @@
     "commit": "ad74240688"
   },
   "model": {
-    "id": "the model its onboarding recommends (to be recorded at setup)",
-    "size_mb": 0,
-    "backend": "whisper.cpp / sherpa-onnx"
+    "id": "Parakeet Unified EN 0.6B, sherpa-onnx int8 (its setup table's pick for English)",
+    "size_mb": 631,
+    "backend": "sherpa-onnx"
   },
   "language": "en",
   "cleanup": "off",
-  "notes": "Globe/Fn on macOS, activation tap (defaults).",
-  "hosted_setup": false,
-  "settings_files": []
+  "notes": "Globe/Fn, activation tap (defaults); settings written to its localStorage as onboarding would.",
+  "hosted_setup": true,
+  "settings_files": [],
+  "logs": "~/Library/Logs/OpenWhispr/*.log"
 }
