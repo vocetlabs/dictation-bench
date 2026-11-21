@@ -152,6 +152,7 @@ def verify(score: dict) -> list[str]:
 
 COLS = ["app", "version", "model", "cleanup", "machine", "clips", "wer_intended", "wer_spoken", "failure_rate",
         "e2t_p50_s", "e2t_p95_s", "post_stop_p50_s", "post_stop_p95_s"]
+JUDGE_COLS = ["zer", "amend", "judge_model"]
 
 
 def table(scores: list[dict]) -> str:
@@ -166,7 +167,10 @@ def table(scores: list[dict]) -> str:
         return ("| " + " | ".join(cols) + " |\n|" + "---|" * len(cols) + "\n"
                 + "".join("| " + " | ".join(cell(r.get(c)) for c in cols) + " |\n" for r in rows))
     rows = [row(s) for s in scores]
-    acc = md(rows, COLS[:9])
+    judged = any(r.get("zer") is not None for r in rows)
+    acc = md(rows, COLS[:9] + (JUDGE_COLS if judged else []))
+    if not judged:
+        acc += "\nJudge metrics (ZER, AMEND): not computed (no key).\n"
     timed = [r for r in rows if r.get("timed")]
     speed = md(timed, COLS[:6] + COLS[8:]) if timed else "(no timed runs)\n"
     return f"Accuracy (WER %, lower is better)\n\n{acc}\nSpeed (seconds; timed runs only)\n\n{speed}"

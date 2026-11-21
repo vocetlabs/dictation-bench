@@ -3,7 +3,7 @@
 # dependencies = ["sounddevice==0.5.1", "soundfile==0.12.1", "numpy==2.2.4", "soxr==0.5.0.post1",
 #                 "pyobjc-framework-Quartz==11.0; sys_platform == 'darwin'",
 #                 "pyobjc-framework-ApplicationServices==11.0; sys_platform == 'darwin'",
-#                 "pyobjc-framework-Cocoa==11.0; sys_platform == 'darwin'"]
+#                 "pyobjc-framework-Cocoa==11.0; sys_platform == 'darwin'", "amend-va==0.2.1"]
 # ///
 """The bench's one command, the same locally and in CI (run it as ./bench, which uses uv).
 
@@ -14,6 +14,7 @@
     ./bench run --app handy --smoke        # one synthetic dictation (macOS `say`): does the setup work?
     ./bench run --app handy --full         # the smoke gate, then all 151 clips, then score
     ./bench score out/handy                # WER from a finished run (refuses incomplete runs)
+    ./bench judge out/handy                # optional ZER/AMEND (needs JUDGE_API_KEY; skipped without)
     ./bench verify out/handy/score.json    # recompute the headline from the per-clip numbers
     ./bench table out/*/score.json         # accuracy and speed tables
     ./bench dry-run                        # the loop against a simulated app (no macOS)
@@ -172,6 +173,32 @@ def score_cmd(run_dir: pathlib.Path, manifest: pathlib.Path | None = None) -> in
     return 0
 
 
+def judge_cmd(run_dir: pathlib.Path) -> int:
+    key = os.environ.get("JUDGE_API_KEY", "")
+    if not key:
+        print("judge metrics: not computed (no key)")
+        return 0
+    import judge as jd
+    try:
+        out = jd.judge_run(run_dir, HERE / "clips" / "manifest.csv", key)
+    except sc.Incomplete as e:
+        print(f"judge metrics: not computed ({e})", file=sys.stderr)
+        return 1
+    (run_dir / "judge.json").write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
+    return 0 if "zer" in out else 1
+
+
+def with_judge(score_json: pathlib.Path) -> dict:
+    """score.json, plus ZER/AMEND from judge.json beside it when that judged the same results."""
+    s = json.loads(score_json.read_text())
+    jp = score_json.with_name("judge.json")
+    if jp.exists():
+        j = json.loads(jp.read_text())
+        if j.get("results_sha256") == s.get("results_sha256") and "zer" in j:
+            s.update(zer=j["zer"], amend=j["amend"], judge_model=j["judge"]["model"])
+    return s
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -194,6 +221,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--hotkey", help="override the app's key (recorded in run.json)")
     sc_ = sub.add_parser("score")
     sc_.add_argument("run_dir", type=pathlib.Path)
+    j = sub.add_parser("judge")
+    j.add_argument("run_dir", type=pathlib.Path)
     v = sub.add_parser("verify")
     v.add_argument("score_json", type=pathlib.Path)
     t = sub.add_parser("table")
@@ -215,12 +244,14 @@ def main(argv: list[str] | None = None) -> int:
         return run(a)
     if a.cmd == "score":
         return score_cmd(a.run_dir)
+    if a.cmd == "judge":
+        return judge_cmd(a.run_dir)
     if a.cmd == "verify":
         bad = sc.verify(json.loads(a.score_json.read_text()))
         print("consistent" if not bad else "\n".join(bad))
         return 1 if bad else 0
     if a.cmd == "table":
-        print(sc.table([json.loads(p.read_text()) for p in a.scores]))
+        print(sc.table([with_judge(p) for p in a.scores]))
         return 0
     if a.cmd == "windows":
         import Quartz

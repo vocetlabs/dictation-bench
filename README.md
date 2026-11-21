@@ -35,6 +35,18 @@ typographic quotes and dashes are folded to ASCII, case and punctuation are igno
 counts every reference word as an error. A run is scored only if every selected clip has exactly one app
 outcome; otherwise `score` refuses and says why.
 
+**Judge metrics (optional).** ZER (share of clips that need no edit) and AMEND (pooled character edits /
+characters), from [amend-va](https://pypi.org/project/amend-va/) 0.2.1's prompt `v1` and its `char_edits`,
+asked of one pinned judge, `anthropic/claude-opus-5.5` (reasoning effort high), through OpenRouter's
+OpenAI-compatible API. They are computed only when `JUDGE_API_KEY` is set (`./bench judge out/<run>`);
+otherwise the summary says "judge metrics: not computed (no key)". Sent to the judge, for each clip with
+text: the clip's intended text, its spoken text and the app's draft. Clips with no output are not sent and
+get no ZER credit. Only numbers are kept (`judge.json`); the judge's corrections stay in the local,
+git-ignored `.judge-cache/`, keyed by model, prompt version and scorer version. No headline is given unless
+every clip has a judgement. `BENCH_JUDGE_MODEL` and `BENCH_JUDGE_URL` change the judge; compare runs only
+under the same judge. In a repository of your own, add a `JUDGE_API_KEY` secret and pass it to the
+workflow's Judge step (`env: JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}`).
+
 **Speed** (quiet real Macs only, not CI): `e2t` = end of speech in the clip to the last change of the text
 (primary); `post_stop` = key release to the last change. p50 and p95 over `ok` clips, with the failure
 rate (share of clips not `ok`) beside them. End of speech is the end of the last 30 ms frame whose energy
@@ -43,11 +55,11 @@ is at least 10% of the clip's loud frames.
 ## Run it on GitHub (accuracy)
 
 Fork the repository, enable Actions, and run the **Bench** workflow with an app and `smoke` (one synthetic
-dictation) or `full` (all clips). A GitHub-hosted macOS runner has a logged-in session, so the job installs
+dictation) or `full` (all clips). A push runs `ci-plan.json`. A GitHub-hosted macOS runner has a logged-in session, so the job installs
 BlackHole, installs the app's signed release, sets it up as its onboarding would, grants its permissions,
 runs the smoke dictation as a gate, then the clips, and scores in the job. Runs there are accuracy-only
 (`--accuracy-only`: a longer text deadline, no latency), since a shared runner's speed says little about a
-Mac. The job uploads `score.json` and `run.json` only.
+Mac. The job uploads `score.json`, `run.json` and (with a judge key) `judge.json` only.
 
 Apps with an unattended setup (`hosted_setup: true` in `apps/<app>.json`): Handy, Muesli, FluidVoice,
 VoiceInk and Vocet (built from the pinned commit). OpenWhispr is set up by hand on a local Mac for now.
@@ -100,11 +112,12 @@ Corrections to an app's configuration are welcome from its maintainers.
 | `harness.py` | the clip loop, outcomes and timing (pure Python; runs against a stub app in tests) |
 | `macos.py` | key events, BlackHole, playback, the TextEdit target, app restarts |
 | `score.py` | WER, the completeness checks, `score.json`, the verifier and tables |
+| `judge.py` | the optional judge metrics (ZER, AMEND) |
 | `fetch_clips.py` | downloads the dataset (pinned revision, sha256 checked) into `clips/` |
 | `apps/` | one config and one setup script per app; `common.sh` holds their helpers |
 | `test_*.py`, `test.sh` | offline tests |
 
-`clips/`, `out/` (per-clip results with transcripts) and `work/` are git-ignored.
+`clips/`, `out/` (per-clip results with transcripts), `.judge-cache/` and `work/` are git-ignored.
 
 **`score.json`** holds the app, its effective configuration, the run fingerprint (everything the results
 depend on: config, binary hash, harness version, timing, dataset, machine), the digest of the results it
