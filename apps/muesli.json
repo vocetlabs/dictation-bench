@@ -19,6 +19,7 @@
   "language": "en",
   "cleanup": "off",
   "notes": "HotkeyConfig default: Right Option, hold.",
-  "hosted_setup": false,
-  "settings_files": []
+  "hosted_setup": true,
+  "settings_files": ["~/Library/Application Support/Muesli/config.json"],
+  "logs": "unified:Muesli:"
 }

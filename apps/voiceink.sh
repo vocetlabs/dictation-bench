@@ -17,4 +17,10 @@ defaults write $d CurrentTranscriptionModel -string parakeet-tdt-0.6b-v3
 # The shortcut as ShortcutStore saves it: JSON of Shortcut (modifier-only, key 61 = Right Option, Option flag).
 defaults write $d Shortcut_primaryRecording -data \
   "$(printf '{"kind":"modifierOnly","keyCode":61,"modifierFlagsRawValue":524288}' | xxd -p | tr -d '\n')"
+# The starter mode onboarding installs by default (StarterModeCatalog "Dictation": no AI enhancement, text
+# formatting on, the onboarding's model and its default language "auto"), as ModeManager stores it, and
+# made the active mode. Without a mode VoiceInk refuses to record ("No mode configured").
+mode=10000000-0000-0000-0000-000000000001
+defaults write $d modeConfigurationsV2 -data "$(printf '[{"id":"%s","name":"Dictation","isAIEnhancementEnabled":false,"selectedTranscriptionModelName":"parakeet-tdt-0.6b-v3","selectedLanguage":"auto","isTextFormattingEnabled":true,"useClipboardContext":false,"useSelectedTextContext":false,"useScreenCapture":false,"outputMode":"paste","isEnabled":true,"isDefault":true}]' "$mode" | xxd -p | tr -d '\n')"
+defaults write $d activeConfigurationId -string "$mode"
 start VoiceInk.app VoiceInk
