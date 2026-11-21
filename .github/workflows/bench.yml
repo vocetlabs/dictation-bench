@@ -16,7 +16,7 @@ on:
       app:
         description: App (apps/<app>.json with hosted_setup true), or all of them
         type: choice
-        options: [all, handy, muesli, fluidvoice, vocet, openwhispr]
+        options: [all, handy, muesli, fluidvoice, vocet]
       size:
         description: smoke (one synthetic dictation) or full (all clips)
         type: choice
