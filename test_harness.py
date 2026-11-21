@@ -139,6 +139,18 @@ class LoopTests(unittest.TestCase):
             self.assertEqual(ab.main(["dry-run", "-n", "3"]), 0)
         self.assertIn("3/3 ok", buf.getvalue())
 
+    def test_shards_cover_every_clip_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d)
+            write_csv(p / "manifest.csv", [{"clip_id": f"c{i}", "file": f"c{i}.flac", "audio_length_s": "1",
+                                            "intended_text": "x"} for i in range(10)])
+            shards = [[c.clip_id for c in ab.load_clips(p, shard=ab.parse_shard(f"{k}/3"))] for k in (1, 2, 3)]
+        self.assertEqual(sorted(sum(shards, [])), sorted(f"c{i}" for i in range(10)))
+        self.assertEqual(shards[0], ["c0", "c3", "c6", "c9"])
+        for bad in ("0/3", "4/3", "x"):
+            with self.assertRaises(ValueError):
+                ab.parse_shard(bad)
+
     def test_load_clips_reads_the_manifest_in_order(self):
         with tempfile.TemporaryDirectory() as d:
             p = pathlib.Path(d)
@@ -221,6 +233,22 @@ class ScoringTests(unittest.TestCase):
         from amend.metric import char_edits
         self.assertEqual(char_edits("Hello Bob.", "Hello Bob.")[0], 0)
         self.assertGreater(char_edits("Run bake.", "Run make.")[0], 0)
+
+    def test_wer_counts_on_fixed_strings_add_up_across_shards(self):
+        self.assertEqual(ab.words("Hello, Bob's  team!"), ["hello", "bob's", "team"])
+        self.assertEqual(ab.edit_distance(["a", "b", "c"], ["a", "x", "c", "d"]), 2)
+        man = [{"clip_id": "c1", "spoken_text": "hello bob", "intended_text": "Hello Bob."},
+               {"clip_id": "c2", "spoken_text": "run make now", "intended_text": "Run make."},
+               {"clip_id": "c3", "spoken_text": "done", "intended_text": "Done."}]
+        res = [{"clip_id": "c1", "status": "ok", "transcript": "Hello, Bob."},
+               {"clip_id": "c2", "status": "ok", "transcript": "Run bake now."},
+               {"clip_id": "c3", "status": "empty", "transcript": ""}]
+        whole = ab.wer_counts(res, man)
+        self.assertEqual((whole["spoken_errors"], whole["spoken_words"]), (2, 6))  # bake; c3 missing
+        self.assertEqual((whole["intended_errors"], whole["intended_words"]), (3, 5))  # bake, +now; c3
+        halves = [ab.wer_counts(res[:2], man), ab.wer_counts(res[2:], man)]
+        self.assertEqual(ab.wer_summary(halves), ab.wer_summary([whole]))
+        self.assertEqual(ab.wer_summary([whole])["wer_spoken"], 33.33)
 
     def test_two_runs_are_compared_within_the_noise_of_a_paired_difference(self):
         def scored(flags):

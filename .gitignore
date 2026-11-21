@@ -10,3 +10,4 @@ work/
 *.parquet
 __pycache__/
 .venv/
+out/

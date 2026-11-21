@@ -342,7 +342,8 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
     return rows
 
 
-def load_clips(folder: pathlib.Path, limit: int | None = None, only: set[str] | None = None) -> list[Clip]:
+def load_clips(folder: pathlib.Path, limit: int | None = None, only: set[str] | None = None,
+               shard: tuple[int, int] | None = None) -> list[Clip]:
     """Clips in manifest order (manifest.csv from fetch_dataset.py: file, clip_id, audio_length_s,
     intended_text)."""
     with (folder / "manifest.csv").open(newline="", encoding="utf-8") as fh:
@@ -353,7 +354,20 @@ def load_clips(folder: pathlib.Path, limit: int | None = None, only: set[str] | 
             continue
         p = folder / pathlib.Path(r.get("file") or f"{r['clip_id']}.flac").name
         clips.append(Clip(r["clip_id"], p, float(r.get("audio_length_s") or 0), r.get("intended_text", "")))
+    if shard:  # (k, n): every n-th clip from the k-th, so shards are similar mixes of the set
+        clips = clips[shard[0]::shard[1]]
     return clips[:limit] if limit else clips
+
+
+def parse_shard(spec: str | None) -> tuple[int, int] | None:
+    """'2/4' -> (1, 4): the second of four shards."""
+    if not spec:
+        return None
+    k, _, n = spec.partition("/")
+    k_, n_ = int(k), int(n)
+    if not 1 <= k_ <= n_:
+        raise ValueError(f"shard {spec}: want k/n with 1 <= k <= n")
+    return k_ - 1, n_
 
 
 # --- The stub app (dry run and tests) ----------------------------------------------------------------
@@ -782,6 +796,59 @@ VIEWS = {
 }
 
 
+def words(text: str) -> list[str]:
+    """Lowercase words with punctuation dropped (apostrophes inside words kept), for WER."""
+    out, cur = [], []
+    for ch in text.lower():
+        if ch.isalnum() or (ch == "'" and cur):
+            cur.append(ch)
+        elif cur:
+            out.append("".join(cur).strip("'"))
+            cur = []
+    if cur:
+        out.append("".join(cur).strip("'"))
+    return [w for w in out if w]
+
+
+def edit_distance(a: list[str], b: list[str]) -> int:
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        cur = [i]
+        for j, y in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return prev[-1]
+
+
+def wer_counts(results: list[dict], manifest: list[dict]) -> dict:
+    """Word errors against the manifest's spoken (verbatim) and intended texts, as additive counts so shards
+    can be summed: {clips, ok, spoken_errors, spoken_words, intended_errors, intended_words}. A clip with no
+    text counts every reference word as an error. No text leaves this function, only numbers."""
+    res = {r["clip_id"]: r for r in results}
+    out = {"clips": 0, "ok": 0, "spoken_errors": 0, "spoken_words": 0, "intended_errors": 0, "intended_words": 0}
+    for m in manifest:
+        r = res.get(m["clip_id"])
+        if r is None:
+            continue
+        hyp = words(r.get("transcript", "")) if r.get("status") == "ok" else []
+        out["clips"] += 1
+        out["ok"] += r.get("status") == "ok"
+        for key, ref in (("spoken", m.get("spoken_text", "")), ("intended", m.get("intended_text", ""))):
+            rw = words(ref)
+            out[f"{key}_errors"] += edit_distance(rw, hyp)
+            out[f"{key}_words"] += len(rw)
+    return out
+
+
+def wer_summary(counts: list[dict]) -> dict:
+    """Sum shard counts; WER in percent."""
+    tot = {k: sum(c.get(k, 0) for c in counts) for k in counts[0]} if counts else {}
+    for key in ("spoken", "intended"):
+        if tot.get(f"{key}_words"):
+            tot[f"wer_{key}"] = round(100 * tot[f"{key}_errors"] / tot[f"{key}_words"], 2)
+    return tot
+
+
 def summary_table(rows: list[dict], fmt_: str = "md", view: str = "all") -> str:
     """The summary as Markdown or CSV. The speed view lists only runs whose latency was measured."""
     cols = VIEWS[view]
@@ -836,6 +903,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("-o", "--output", type=pathlib.Path, required=True)
     r.add_argument("--limit", type=int)
     r.add_argument("--only", help="comma-separated clip ids")
+    r.add_argument("--shard", help="k/n: run only the k-th of n interleaved shards (parallel CI jobs)")
     r.add_argument("--attempts", type=int, default=2)
     r.add_argument("--warmup", type=int, default=1, help="unrecorded dictations before timing (loads the model)")
     r.add_argument("--check", action="store_true", help="preflight only")
@@ -853,6 +921,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--judge", default="claude")
     s.add_argument("--format", default="md", choices=["md", "csv", "json"])
     s.add_argument("--view", default="all", choices=sorted(VIEWS))
+    w = sub.add_parser("wer", help="WER counts of a results CSV against the manifest (numbers only)")
+    w.add_argument("results", type=pathlib.Path)
+    w.add_argument("manifest", type=pathlib.Path)
+    ws = sub.add_parser("wer-sum", help="sum the JSON counts of several shards")
+    ws.add_argument("counts", nargs="+", type=pathlib.Path)
     g = sub.add_parser("compare", help="two runs on the same clips: is the ZER difference within noise?")
     g.add_argument("run_a", type=pathlib.Path)
     g.add_argument("run_b", type=pathlib.Path)
@@ -880,6 +953,12 @@ def main(argv: list[str] | None = None) -> int:
         rows = [summarize_run(p, a.judge) for p in a.runs]
         print(json.dumps(rows, indent=1) if a.format == "json" else summary_table(rows, a.format, a.view), end="")
         return 0
+    if a.cmd == "wer":
+        print(json.dumps(wer_counts(read_csv(a.results), read_csv(a.manifest))))
+        return 0
+    if a.cmd == "wer-sum":
+        print(json.dumps(wer_summary([json.loads(p.read_text()) for p in a.counts]), indent=1))
+        return 0
     if a.cmd == "compare":
         name = {"claude": "scored.csv"}.get(a.judge, f"scored_{a.judge}.csv")
         res = compare_runs(read_csv(a.run_a / name), read_csv(a.run_b / name), a.tolerance)
@@ -901,7 +980,8 @@ def run_mac(driver: Driver, driver_name: str, timing: Timing, a: argparse.Namesp
     """The `run` loop on this Mac: TextEdit as the target, the Mac kept awake. `a` carries the clips,
     output, limit/only, attempts, warmup, app and mode."""
     target = TextEditTarget(pathlib.Path.home() / "bench" / "scratch.txt")
-    clips = load_clips(a.clips, a.limit, set(a.only.split(",")) if a.only else None)
+    clips = load_clips(a.clips, a.limit, set(a.only.split(",")) if a.only else None,
+                       parse_shard(getattr(a, "shard", None)))
     caff = subprocess.Popen(["caffeinate", "-dimsu"])
     try:
         rows = run_all(clips, driver, target, Clock(), timing, a.output, app=a.app, mode=a.mode,
