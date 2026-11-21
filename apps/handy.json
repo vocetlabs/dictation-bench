@@ -21,5 +21,6 @@
   "notes": "Fresh-install activation HoldOrToggle (a hold past the threshold acts as push-to-talk); the catalogue's first recommended model.",
   "hosted_setup": true,
   "settings_files": ["~/Library/Application Support/com.pais.handy/settings_store.json"],
-  "logs": "~/Library/Logs/com.pais.handy/*.log"
+  "logs": "~/Library/Logs/com.pais.handy/*.log",
+  "hybrid": true
 }

@@ -21,5 +21,6 @@
   "notes": "Onboarding asks for a shortcut: Right Option (the same key as Muesli, FluidVoice and Vocet); recording mode left at its default.",
   "hosted_setup": true,
   "settings_files": ["~/Library/Preferences/com.prakashjoshipax.VoiceInk.plist"],
-  "logs": "unified:VoiceInk:com.prakashjoshipax"
+  "logs": "unified:VoiceInk:com.prakashjoshipax",
+  "hybrid": true
 }

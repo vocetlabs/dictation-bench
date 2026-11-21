@@ -50,6 +50,14 @@ class HotkeyTests(unittest.TestCase):
         self.assertEqual(hn.key_events(hn.parse_hotkey("ralt"), True)[0][2], hn.ALTERNATE | 0x40 | hn.NON_COALESCED)
         self.assertEqual(hn.key_events(hn.parse_hotkey("fn"), True)[0][2], hn.SECONDARY_FN | hn.NON_COALESCED)
 
+    def test_hybrid_and_toggle_apps_restart_after_an_unclear_attempt(self):
+        base = dict(version="1", process="p", app_path="/A.app", hotkey="ralt")
+        self.assertFalse(hn.restarts_after_unclear(hn.App(name="h", **base)))
+        self.assertTrue(hn.restarts_after_unclear(hn.App(name="t", mode="toggle", **base)))
+        self.assertTrue(hn.restarts_after_unclear(hn.App(name="y", hybrid=True, **base)))
+        with self.assertRaises(ValueError):
+            hn.App(name="bad", mode="toggle", hybrid=True, **base)
+
     def test_every_checked_in_app_config_loads(self):
         for path in sorted((HERE / "apps").glob("*.json")):
             app = hn.load_app(path)

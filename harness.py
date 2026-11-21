@@ -124,6 +124,8 @@ class App:
     app_path: str
     hotkey: str
     mode: str = "hold"
+    hybrid: bool = False                          # hold = push-to-talk, tap = toggle: driven by holding, but
+                                                  #   its state is unclear after a fault, like a toggle app
     release: dict = field(default_factory=dict)   # url, sha256, tag, commit
     model: dict = field(default_factory=dict)     # id, size_mb, backend
     language: str = "en"
@@ -135,8 +137,15 @@ class App:
 
     def __post_init__(self) -> None:
         parse_hotkey(self.hotkey)
+        if self.hybrid and self.mode != "hold":
+            raise ValueError(f"{self.name}: a hybrid app is driven by holding (mode hold)")
         if self.mode not in ("hold", "toggle"):
             raise ValueError(f"{self.name}: mode must be hold or toggle")
+
+
+def restarts_after_unclear(app: App) -> bool:
+    """A toggle or hybrid app's recording state is unknown after an unclear attempt: restart it."""
+    return app.mode == "toggle" or app.hybrid
 
 
 def load_app(path: pathlib.Path) -> App:
@@ -189,7 +198,7 @@ class Timing:
     settle: float = 2.0        # text unchanged this long = done
     timeout: float = 30.0      # after the release
     quiet: float = 5.0         # after a non-ok outcome: watch for late text before the next clip
-    ready_timeout: float = 5.0
+    ready_timeout: float = 10.0  # the first dictation may also load the model
     gap: float = 1.0
     poll: float = 0.02
     timed: bool = True         # False: accuracy only (a machine whose speed doesn't count)

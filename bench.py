@@ -116,7 +116,7 @@ def run(a: argparse.Namespace) -> int:
     timing = hn.accuracy_only() if a.accuracy_only else hn.Timing()
     driver = BlackHoleDriver(app, timing)
     target = TextEditTarget(pathlib.Path.home() / "bench" / "scratch.txt")
-    restart = app.mode == "toggle"  # after an unclear outcome a toggle app's recording state is unknown
+    restart = hn.restarts_after_unclear(app)
     caff = subprocess.Popen(["caffeinate", "-dimsu"])
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,7 +126,7 @@ def run(a: argparse.Namespace) -> int:
                     res = hn.run_clip(clip, driver, target, hn.Clock(), timing)
                 except hn.InfraError as e:
                     res = hn.Result(e.status, error=str(e))
-                driver.recover(restart=restart and res.status != "ok")
+                driver.recover(restart=res.status != "ok")  # a failed smoke try leaves an unknown state
                 ok, msg = smoke_ok(res)
                 print(f"{msg} (attempt {attempt})", flush=True)
                 if ok:

@@ -3,7 +3,17 @@
 # hold to talk. The app is built from source (BENCH_VOCET_APP=<path to Vocet.app>), since no signed
 # release exists for the commit under test.
 . "$(dirname "$0")/common.sh"
-app=${BENCH_VOCET_APP:?set BENCH_VOCET_APP to a built Vocet.app}
+repo=https://github.com/gargankit90/dictation-app
+commit=a7c7a46d94662d68623c6e630a147714e7f6e274
+app=${BENCH_VOCET_APP:-}
+if [ -z "$app" ]; then  # build the pinned commit, ad-hoc signed (the release certificate isn't public)
+  src=$(mktemp -d)/dictation-app
+  git clone --quiet --filter=blob:none "$repo" "$src"
+  git -C "$src" -c advice.detachedHead=false checkout --quiet "$commit"
+  (cd "$src" && rustup toolchain install >/dev/null && npm ci --silent &&
+    npm run tauri build -- --bundles app --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}' >/dev/null)
+  app=$src/target/release/bundle/macos/Vocet.app
+fi
 rm -rf /Applications/Vocet.app 2>/dev/null || sudo rm -rf /Applications/Vocet.app
 ditto "$app" /Applications/Vocet.app 2>/dev/null || sudo ditto "$app" /Applications/Vocet.app
 grant com.dictationapp.desktop
