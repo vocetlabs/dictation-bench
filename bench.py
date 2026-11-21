@@ -94,11 +94,12 @@ def show_logs(app: hn.App, lines: int = 40) -> None:
     """The tail of the app's own log, after a failed smoke test only (its audio is our synthetic
     sentence, so nothing from the dataset can be in it)."""
     import glob
-    if app.logs.startswith("unified:"):
-        proc = app.logs.split(":", 1)[1]
-        out = subprocess.run(["log", "show", "--last", "5m", "--style", "compact", "--predicate",
-                              f'process == "{proc}"'], capture_output=True, text=True).stdout.splitlines()
-        print("\n".join(x[:300] for x in out[-lines:]), file=sys.stderr)
+    if app.logs.startswith("unified:"):  # unified:<process>[:<subsystem prefix>]
+        _, proc, *sub = app.logs.split(":") + [""]
+        pred = f'process == "{proc}"' + (f' AND subsystem BEGINSWITH "{sub[0]}"' if sub and sub[0] else "")
+        out = subprocess.run(["log", "show", "--last", "10m", "--style", "compact", "--info", "--debug",
+                              "--predicate", pred], capture_output=True, text=True).stdout.splitlines()
+        print("\n".join(x[:400] for x in out[-4 * lines:]), file=sys.stderr)
         return
     for f in sorted(glob.glob(os.path.expanduser(app.logs)))[-2:] if app.logs else []:
         print(f"--- {f}", file=sys.stderr)

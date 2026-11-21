@@ -12,13 +12,14 @@
     "commit": "9912eca0d9"
   },
   "model": {
-    "id": "Parakeet TDT 0.6B, Core ML (the Apple-silicon default)",
-    "size_mb": 450,
+    "id": "Parakeet TDT v3, Core ML (\"FluidVoice Pick\", the Apple-silicon default)",
+    "size_mb": 461,
     "backend": "FluidAudio Core ML"
   },
   "language": "en",
   "cleanup": "off",
   "notes": "Default primary shortcut Right Option; hotkey mode toggle unless press-and-hold is turned on.",
-  "hosted_setup": false,
-  "settings_files": []
+  "hosted_setup": true,
+  "settings_files": ["~/Library/Preferences/com.FluidApp.app.plist"],
+  "logs": "unified:FluidVoice:"
 }
