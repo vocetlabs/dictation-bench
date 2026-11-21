@@ -10,8 +10,11 @@ if [ -z "$app" ]; then  # build the pinned commit, ad-hoc signed (the release ce
   src=$(mktemp -d)/dictation-app
   git clone --quiet --filter=blob:none "$repo" "$src"
   git -C "$src" -c advice.detachedHead=false checkout --quiet "$commit"
-  (cd "$src" && rustup toolchain install >/dev/null && npm ci --silent &&
-    npm run tauri build -- --bundles app --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}' >/dev/null)
+  case "$(node -v 2>/dev/null)" in v24.*) ;; *)  # the repo's engines field: Node 24
+    brew install --quiet node@24 && export PATH="$(brew --prefix node@24)/bin:$PATH" ;; esac
+  (cd "$src" && rustup toolchain install && npm ci --no-audit --no-fund &&
+    npm run tauri build -- --bundles app --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}' 2>&1 | tail -n 40)
+  [ -d "$src/target/release/bundle/macos/Vocet.app" ] || { log "the Vocet build failed"; exit 1; }
   app=$src/target/release/bundle/macos/Vocet.app
 fi
 rm -rf /Applications/Vocet.app 2>/dev/null || sudo rm -rf /Applications/Vocet.app
