@@ -11,6 +11,10 @@ grant com.prakashjoshipax.VoiceInk
 models="$HOME/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3-coreml"
 uvx --quiet --from huggingface_hub==0.26.2 huggingface-cli download FluidInference/parakeet-tdt-0.6b-v3-coreml \
   --revision 7dd20fe6b1797d35f5e3307e8b1732d9a178edfe --include "*.mlmodelc/*" "*.json" --local-dir "$models" >/dev/null
+# VoiceInk counts a Parakeet model as downloaded only with FluidAudio's voice-activity model beside it.
+uvx --quiet --from huggingface_hub==0.26.2 huggingface-cli download FluidInference/silero-vad-coreml \
+  --revision b419383c55c110e2c9271fa6ee0ea83d03c70d96 --include "*.mlmodelc/*" "*.json" \
+  --local-dir "$HOME/Library/Application Support/FluidAudio/Models/silero-vad-coreml" >/dev/null
 d=com.prakashjoshipax.VoiceInk
 defaults write $d hasCompletedOnboardingV2 -bool true
 defaults write $d CurrentTranscriptionModel -string parakeet-tdt-0.6b-v3
