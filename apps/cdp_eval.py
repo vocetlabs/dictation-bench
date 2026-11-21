@@ -33,7 +33,7 @@ def main() -> int:
         return 1
     done = 0
     for p in pages:
-        ws = websocket.create_connection(p["webSocketDebuggerUrl"], timeout=10)
+        ws = websocket.create_connection(p["webSocketDebuggerUrl"], timeout=10, suppress_origin=True)
         ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": expr}}))
         reply = json.loads(ws.recv())
         ws.close()
