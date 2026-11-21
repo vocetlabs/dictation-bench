@@ -102,7 +102,10 @@ def show_logs(app: hn.App, lines: int = 40) -> None:
                               "--predicate", pred], capture_output=True, text=True).stdout.splitlines()
         print("\n".join(x[:400] for x in out[-4 * lines:]), file=sys.stderr)
         return
-    for f in sorted(glob.glob(os.path.expanduser(app.logs)))[-2:] if app.logs else []:
+    files = sorted(glob.glob(os.path.expanduser(app.logs))) if app.logs else []
+    if app.logs and not files:
+        print(f"(no log files match {app.logs})", file=sys.stderr)
+    for f in files[-2:]:
         print(f"--- {f}", file=sys.stderr)
         tail = pathlib.Path(f).read_text(errors="replace").splitlines()[-lines:]
         print("\n".join(x[:300] for x in tail), file=sys.stderr)
