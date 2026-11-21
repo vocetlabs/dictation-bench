@@ -90,6 +90,16 @@ def smoke_ok(res: hn.Result) -> tuple[bool, str]:
     return ok, f"smoke: {res.status}, {right}/{len(want)} words right, e2t={res.e2t_s} {res.error}"
 
 
+def show_logs(app: hn.App, lines: int = 40) -> None:
+    """The tail of the app's own log, after a failed smoke test only (its audio is our synthetic
+    sentence, so nothing from the dataset can be in it)."""
+    import glob
+    for f in sorted(glob.glob(os.path.expanduser(app.logs)))[-2:] if app.logs else []:
+        print(f"--- {f}", file=sys.stderr)
+        tail = pathlib.Path(f).read_text(errors="replace").splitlines()[-lines:]
+        print("\n".join(x[:300] for x in tail), file=sys.stderr)
+
+
 def run(a: argparse.Namespace) -> int:
     from macos import BlackHoleDriver, TextEditTarget, preflight
     app = app_config(a.app)
@@ -113,6 +123,7 @@ def run(a: argparse.Namespace) -> int:
             print(msg, flush=True)
             if not ok:
                 print("the smoke dictation failed: fix the setup before a full run", file=sys.stderr)
+                show_logs(app)
                 return 2
         if a.smoke:
             return 0
@@ -177,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("score_json", type=pathlib.Path)
     t = sub.add_parser("table")
     t.add_argument("scores", nargs="+", type=pathlib.Path)
+    sub.add_parser("windows", help="on-screen windows (owner and title), to debug a setup")
     d = sub.add_parser("dry-run")
     d.add_argument("-n", type=int, default=5)
     a = ap.parse_args(argv)
@@ -199,6 +211,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if bad else 0
     if a.cmd == "table":
         print(sc.table([json.loads(p.read_text()) for p in a.scores]))
+        return 0
+    if a.cmd == "windows":
+        import Quartz
+        for w in Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID):
+            if int(w.get("kCGWindowLayer", 0)) >= 0:
+                print(f"{w.get('kCGWindowOwnerName')} | {w.get('kCGWindowName') or ''} | layer {w.get('kCGWindowLayer')}")
         return 0
     if a.cmd == "dry-run":
         with tempfile.TemporaryDirectory() as tmp:
