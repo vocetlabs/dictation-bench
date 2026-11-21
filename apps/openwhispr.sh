@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # OpenWhispr 1.12.0, as its onboarding leaves it for an English speaker who chooses "on this device":
 # onboarding done, local transcription with the model its setup table picks for English (Parakeet Unified
-# EN 0.6B, sherpa-onnx int8) downloaded, every other setting at its default (Globe/Fn, tap to toggle).
+# EN 0.6B, sherpa-onnx int8) downloaded, activation at its default (tap to toggle). Its default key, Globe/Fn,
+# is read below the event system and can't be pressed by software, so the key is Right Option, which its
+# hotkey manager accepts as a modifier-only key.
 # OpenWhispr keeps settings in its window's localStorage, so they are written there through the Chrome
 # DevTools Protocol of a one-off launch with --remote-debugging-port, then the app is started normally.
 . "$(dirname "$0")/common.sh"
@@ -22,7 +24,7 @@ port=9229
 open -g /Applications/OpenWhispr.app --args --remote-debugging-port=$port
 sleep 15
 uv run --quiet "$(dirname "$0")/cdp_eval.py" $port \
-  'localStorage.setItem("onboardingCompleted","true"); localStorage.setItem("useLocalWhisper","true"); localStorage.setItem("localTranscriptionProvider","nvidia"); localStorage.setItem("parakeetModel","parakeet-unified-en-0.6b"); "ok"'
+  'localStorage.setItem("onboardingCompleted","true"); localStorage.setItem("useLocalWhisper","true"); localStorage.setItem("localTranscriptionProvider","nvidia"); localStorage.setItem("parakeetModel","parakeet-unified-en-0.6b"); localStorage.setItem("dictationKey","RightOption"); "ok"'
 pkill -TERM -x OpenWhispr || true
 sleep 5
 start OpenWhispr.app OpenWhispr

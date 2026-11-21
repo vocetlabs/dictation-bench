@@ -3,7 +3,7 @@
   "version": "1.12.0",
   "process": "OpenWhispr",
   "app_path": "/Applications/OpenWhispr.app",
-  "hotkey": "fn",
+  "hotkey": "ralt",
   "mode": "toggle",
   "release": {
     "url": "https://github.com/OpenWhispr/openwhispr/releases/download/v1.12.0/OpenWhispr-1.12.0-arm64.dmg",
@@ -18,7 +18,7 @@
   },
   "language": "en",
   "cleanup": "off",
-  "notes": "Globe/Fn, activation tap (defaults); settings written to its localStorage as onboarding would.",
+  "notes": "Activation tap (default). Key: Right Option instead of its Globe/Fn default, which software can't press. Settings written to its localStorage as onboarding would.",
   "hosted_setup": true,
   "settings_files": [],
   "logs": "~/Library/Logs/OpenWhispr/*.log"
