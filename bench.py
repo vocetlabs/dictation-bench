@@ -94,6 +94,12 @@ def show_logs(app: hn.App, lines: int = 40) -> None:
     """The tail of the app's own log, after a failed smoke test only (its audio is our synthetic
     sentence, so nothing from the dataset can be in it)."""
     import glob
+    if app.logs.startswith("unified:"):
+        proc = app.logs.split(":", 1)[1]
+        out = subprocess.run(["log", "show", "--last", "5m", "--style", "compact", "--predicate",
+                              f'process == "{proc}"'], capture_output=True, text=True).stdout.splitlines()
+        print("\n".join(x[:300] for x in out[-lines:]), file=sys.stderr)
+        return
     for f in sorted(glob.glob(os.path.expanduser(app.logs)))[-2:] if app.logs else []:
         print(f"--- {f}", file=sys.stderr)
         tail = pathlib.Path(f).read_text(errors="replace").splitlines()[-lines:]
@@ -114,13 +120,16 @@ def run(a: argparse.Namespace) -> int:
     try:
         with tempfile.TemporaryDirectory() as tmp:
             clip = smoke_clip(pathlib.Path(tmp))
-            try:
-                res = hn.run_clip(clip, driver, target, hn.Clock(), timing)
-            except hn.InfraError as e:
-                res = hn.Result(e.status, error=str(e))
-            driver.recover(restart=restart and res.status != "ok")
-            ok, msg = smoke_ok(res)
-            print(msg, flush=True)
+            for attempt in (1, 2):  # the first dictation may also load the model or compile GPU kernels
+                try:
+                    res = hn.run_clip(clip, driver, target, hn.Clock(), timing)
+                except hn.InfraError as e:
+                    res = hn.Result(e.status, error=str(e))
+                driver.recover(restart=restart and res.status != "ok")
+                ok, msg = smoke_ok(res)
+                print(f"{msg} (attempt {attempt})", flush=True)
+                if ok:
+                    break
             if not ok:
                 print("the smoke dictation failed: fix the setup before a full run", file=sys.stderr)
                 show_logs(app)
