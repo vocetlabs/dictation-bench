@@ -637,8 +637,13 @@ class TextEditTarget(Target):
         import ApplicationServices as AS
         self.AK, self.AS, self.scratch = AppKit, AS, scratch
         scratch.parent.mkdir(parents=True, exist_ok=True)
-        scratch.write_text("")
-        self.area = None
+        if not scratch.exists():  # never rewritten while open: TextEdit would report a conflicting change
+            scratch.write_text("")
+        self.area = self.window = None
+        # A fresh TextEdit with only the scratch document, so nothing else can hold the keyboard focus.
+        subprocess.run(["pkill", "-x", "TextEdit"], check=False)
+        time.sleep(1)
+        subprocess.run(["open", "-F", "-a", "TextEdit", str(scratch)], check=False)
 
     def _get(self, el, attr):
         err, val = self.AS.AXUIElementCopyAttributeValue(el, attr, None)
@@ -649,7 +654,10 @@ class TextEditTarget(Target):
         if not apps:
             raise ClipError("TextEdit isn't running")
         el = self.AS.AXUIElementCreateApplication(apps[0].processIdentifier())
-        win = self._get(el, "AXFocusedWindow") or self._get(el, "AXMainWindow")
+        wins = self._get(el, "AXWindows") or []
+        win = next((w for w in wins if str(self._get(w, "AXTitle") or "").startswith(self.scratch.name)), None)
+        win = win or self._get(el, "AXFocusedWindow") or self._get(el, "AXMainWindow")
+        self.window = win
 
         def find(node, depth=0):
             if node is None or depth > 8:
@@ -663,32 +671,30 @@ class TextEditTarget(Target):
             return None
         return find(win)
 
-    def front_bundle(self) -> str:
-        """The bundle id of the app with the keyboard focus, from Accessibility (NSWorkspace's answer goes
-        stale in a process without a run loop, like this one)."""
-        err, app = self.AS.AXUIElementCopyAttributeValue(self.AS.AXUIElementCreateSystemWide(),
-                                                         "AXFocusedApplication", None)
-        if err != 0 or app is None:
-            return ""
-        err, pid = self.AS.AXUIElementGetPid(app, None)
-        if err != 0:
-            return ""
-        running = self.AK.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
-        return str(running.bundleIdentifier() or "") if running else ""
+    def textedit_frontmost(self) -> bool:
+        """TextEdit's own AXFrontmost. Asked of TextEdit, not the system: system-wide AX queries answer
+        kAXErrorCannotComplete in a VM, and NSWorkspace's answer goes stale in a process without a run loop."""
+        apps = self.AK.NSRunningApplication.runningApplicationsWithBundleIdentifier_("com.apple.TextEdit")
+        if not apps:
+            return False
+        el = self.AS.AXUIElementCreateApplication(apps[0].processIdentifier())
+        return bool(self._get(el, "AXFrontmost"))
 
     def prepare(self) -> None:
         subprocess.run(["open", "-a", "TextEdit", str(self.scratch)], check=False)
-        front = ""
         for _ in range(150):  # TextEdit's first launch on a fresh machine can take seconds
-            front = self.front_bundle()
-            if front == "com.apple.TextEdit":
+            if self.textedit_frontmost():
                 break
             time.sleep(0.1)
         else:
-            raise ClipError(f"TextEdit didn't come to the front (focus: {front or 'unknown'})")
+            raise ClipError("TextEdit didn't come to the front")
         self.area = self._find_area()
         if self.area is None:
             raise ClipError("no text area in TextEdit's front window")
+        if self.window is not None:  # key window, so a paste (Cmd+V) reaches the text view
+            self.AS.AXUIElementPerformAction(self.window, "AXRaise")
+            self.AS.AXUIElementSetAttributeValue(self.window, "AXMain", True)
+            self.AS.AXUIElementSetAttributeValue(self.window, "AXFocused", True)
         self.AS.AXUIElementSetAttributeValue(self.area, "AXFocused", True)
         self.AS.AXUIElementSetAttributeValue(self.area, "AXValue", "")
         time.sleep(0.2)
