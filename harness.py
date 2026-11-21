@@ -1,64 +1,48 @@
-# /// script
-# requires-python = ">=3.11,<3.14"
-# dependencies = ["sounddevice==0.5.1", "soundfile==0.12.1", "numpy==2.2.4", "soxr==0.5.0.post1",
-#                 "pyobjc-framework-Quartz==11.0", "pyobjc-framework-ApplicationServices==11.0",
-#                 "pyobjc-framework-Cocoa==11.0"]
-# ///
-"""A black-box harness that runs a folder of speech clips through any Mac dictation app, the same way.
+"""The clip loop: one dictation per clip, the same way for every app. Pure Python (no macOS imports), so it
+runs against the stub app in tests; macos.py supplies the real keys, audio and TextEdit.
 
-For each clip, in the macOS VM's GUI session (Terminal, which has Accessibility):
+For each clip:
 
-  1. empty a plain TextEdit document and bring it to the front;
-  2. press the app's dictation key (hold mode: key down; toggle mode: one tap);
-  3. wait until some process opens the BlackHole microphone (CoreAudio "running somewhere"; an app that
-     keeps the microphone warm is ready at once), then the fixed start delay;
-  4. play the clip, padded with silence, into BlackHole 2ch (the VM's default input);
-  5. wait the fixed tail, release the key (or tap it again);
-  6. read the document through Accessibility every 20 ms until the text has not changed for 2 s;
-     latency = key-up -> last change of the text (finalize_s), first_text_s = key-up -> first text.
+  1. the target (a TextEdit document) is emptied, brought to the front and checked;
+  2. the app's key is pressed (hold: key down; toggle: a tap);
+  3. the harness waits until some process opens the BlackHole microphone, then the fixed start delay;
+  4. the clip, padded with silence, starts playing into BlackHole, and from that moment the target is read
+     every 20 ms, so text that arrives while speaking (streaming apps) is timed too;
+  5. after the clip and the fixed tail the key is released (or tapped again);
+  6. reading goes on until the text has not changed for `settle` seconds, or `timeout` after the release.
 
-Every app gets the same audio, padding and timing; only its key differs (`APPS`). Nothing is
-app-specific beyond that: no app gets a shortcut around the microphone or the keyboard.
+Outcomes. App outcomes are final on the first attempt (no rerunning an app until it passes):
+  ok       the text settled before the deadline
+  partial  text was still changing at the deadline (scored as it stood)
+  empty    no text by the deadline, and none during the quiet period after it
+  late     no text by the deadline, but text arrived during the quiet period (scored as no output)
+Infrastructure faults are retried (up to `attempts`), each after the app is made idle again:
+  err_target  the document lost the front or couldn't be emptied     err_read   Accessibility read failed
+  err_audio   playback failed                                         err_ready  no process opened the mic
 
-    uv run harness.py run --app handy --clips ~/bench/clips -o ~/bench/out/handy_local.csv
-    python3 harness.py dry-run                  # the whole loop against a stub app, no macOS needed
-    python3 harness.py summarize work/*/ [--format md|csv|json]
-    python3 harness.py compare work/run_a work/run_b     # two runs on the same clips, within noise?
-
-The results CSV holds transcripts of CC BY-NC clips: it stays in the git-ignored work/ folder and only the
-aggregates from `summarize` are published. A rerun with the same -o resumes (clips already `ok` are kept).
-Stdlib only outside `run` and `set-input`; those need macOS and the dependencies above (uv installs them).
+After anything but `ok` the harness waits a quiet period and makes the app idle (releases the key; a
+toggle app, whose recording state is then unknown, is restarted), so a late paste can't land in the next
+clip. Latency: `e2t_s` (primary) = end of speech in the clip -> last change of the text; `post_stop_s` =
+key release -> last change; `first_text_s` = end of speech -> first text (negative for streaming apps).
 """
 from __future__ import annotations
 
-import argparse
 import csv
+import hashlib
 import json
 import math
-import os
 import pathlib
-import platform
-import subprocess
-import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
-HERE = pathlib.Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+HARNESS_VERSION = "2"
 
-FIELDS = ["app", "mode", "driver", "machine", "timed", "clip_id", "status", "attempts", "transcript", "audio_s",
-          "ready_s", "first_text_s", "finalize_s", "error", "run_at"]
+FIELDS = ["clip_id", "status", "attempts", "transcript", "audio_s", "speech_end_s", "ready_s", "e2t_s",
+          "post_stop_s", "first_text_s", "error", "run_at"]
+APP_OUTCOMES = ("ok", "partial", "empty", "late")
+INFRA_ERRORS = ("err_target", "err_read", "err_audio", "err_ready")
 
-# Fixed for every app (the values of the MIT-licensed VoiceArenaAI/Dictation-harness, so runs line up with it).
-PAD_MS = 300
-START_DELAY_S = 0.5
-TAIL_S = 4.0
-SETTLE_S = 2.0
-TIMEOUT_S = 30.0
-READY_TIMEOUT_S = 5.0
-GAP_S = 1.0
-POLL_S = 0.02
 
 # --- Keys --------------------------------------------------------------------------------------------
 # macOS virtual key codes, and for modifiers the CGEventFlags they set (generic mask | device bit).
@@ -71,7 +55,7 @@ MODIFIERS = {  # name: (keycode, flags)
     "lalt": (58, ALTERNATE | 0x20), "ralt": (61, ALTERNATE | 0x40),
     "fn": (63, SECONDARY_FN),
 }
-KEYS = {"space": 49, "grave": 50, "return": 36, "escape": 53, "tab": 48,
+KEYS = {"space": 49, "grave": 50, "return": 36, "escape": 53, "tab": 48, "a": 0, "delete": 51,
         "f13": 105, "f14": 107, "f15": 113, "f16": 106, "f17": 64, "f18": 79, "f19": 80, "f20": 90}
 ALIASES = {"option": "lalt", "alt": "lalt", "ropt": "ralt", "rightoption": "ralt", "command": "lcmd",
            "cmd": "lcmd", "control": "lctrl", "ctrl": "lctrl", "shift": "lshift", "globe": "fn"}
@@ -110,85 +94,116 @@ def key_events(keys: list[Key], down: bool) -> list[tuple[int, bool, int, bool]]
     """The events for pressing (down) or releasing a chord: (keycode, is_down, flags, is_flags_changed).
     Modifiers carry the cumulative flags, as the hardware sends them; the main key carries the held ones."""
     events, held = [], 0
-    order = keys if down else list(reversed(keys))
     if down:
-        for k in order:
+        for k in keys:
             if k.modifier:
                 held |= k.flags
                 events.append((k.code, True, held | NON_COALESCED, True))
             else:
                 events.append((k.code, True, held, False))
     else:
-        held = 0
         for k in keys:
             held |= k.flags
-        for k in order:
+        for k in reversed(keys):
             if k.modifier:
                 held &= ~k.flags
-                events.append((k.code, False, (held | NON_COALESCED), True))
+                events.append((k.code, False, held | NON_COALESCED, True))
             else:
                 events.append((k.code, False, held, False))
     return events
 
 
 # --- Apps --------------------------------------------------------------------------------------------
-@dataclass(frozen=True)
+@dataclass
 class App:
-    process: str           # pgrep -x name, for the preflight
-    hotkey: str            # parse_hotkey spec
-    mode: str = "hold"     # hold: down..up; toggle: tap to start, tap to stop
-    bundle: str = ""       # where it is installed in the VM, for the record
+    """One app's checked-in configuration (apps/<name>.json): the release, how it's driven, and the
+    settings its setup applies. `effective` is filled in at run time from what the app actually uses."""
+    name: str
+    version: str
+    process: str
+    app_path: str
+    hotkey: str
+    mode: str = "hold"
+    release: dict = field(default_factory=dict)   # url, sha256, tag, commit
+    model: dict = field(default_factory=dict)     # id, size_mb, backend
+    language: str = "en"
+    cleanup: str = "off"
     notes: str = ""
+    hosted_setup: bool = False                    # apps/<name>.sh can set it up with no person (CI)
+    settings_files: list = field(default_factory=list)  # hashed into run.json: what the app ran with
+
+    def __post_init__(self) -> None:
+        parse_hotkey(self.hotkey)
+        if self.mode not in ("hold", "toggle"):
+            raise ValueError(f"{self.name}: mode must be hold or toggle")
 
 
-APPS: dict[str, App] = {
-    # Each app's own default key and mode, read from the release's source (BENCH1 report, "Apps and setup").
-    # Process names are checked in the VM by the preflight (pgrep -x).
-    "vocet": App("Vocet", "ralt", "hold", "/Applications/Vocet.app", "hold Right Option (default)"),
-    "handy": App("handy", "lalt+space", "hold", "/Applications/Handy.app",
-                 "Option+Space, push-to-talk (default_settings.json: push_to_talk true)"),
-    "openwhispr": App("OpenWhispr", "fn", "toggle", "/Applications/OpenWhispr.app",
-                      "Globe/Fn on macOS (hotkeyManager getEffectiveDefaultHotkey), activationMode tap (default)"),
-    "muesli": App("Muesli", "ralt", "hold", "/Applications/Muesli.app", "HotkeyConfig default: Right Option, hold"),
-    "fluidvoice": App("FluidVoice", "ralt", "toggle", "/Applications/FluidVoice.app",
-                      "defaultPrimaryDictationShortcut Right Option; hotkeyMode toggle unless press-and-hold is set"),
-    "voiceink": App("VoiceInk", "ralt", "hold", "/Applications/VoiceInk.app", "shortcut chosen in onboarding"),
-    "freeflow": App("FreeFlow", "fn", "hold", "/Applications/FreeFlow.app", "hold Fn (default); cloud only"),
-    "stub": App("stub", "ralt", "hold", "", "the dry-run's simulated app"),
-}
+def load_app(path: pathlib.Path) -> App:
+    return App(**json.loads(path.read_text()))
 
 
-# --- The loop ----------------------------------------------------------------------------------------
+# --- Clips -------------------------------------------------------------------------------------------
 @dataclass
 class Clip:
     clip_id: str
     path: pathlib.Path
     audio_s: float
-    reference: str = ""  # only the stub app uses it (it "transcribes" perfectly)
+    speech_end_s: float | None = None  # end of speech within the clip (unpadded); the driver measures it
+    reference: str = ""                # only the stub app uses it (it "transcribes" perfectly)
 
 
+def load_clips(folder: pathlib.Path, limit: int | None = None, only: set[str] | None = None) -> list[Clip]:
+    """Clips in manifest order (manifest.csv from fetch_clips.py: file, clip_id, audio_length_s, ...)."""
+    with (folder / "manifest.csv").open(newline="", encoding="utf-8") as fh:
+        man = list(csv.DictReader(fh))
+    clips = [Clip(r["clip_id"], folder / pathlib.Path(r.get("file") or f"{r['clip_id']}.flac").name,
+                  float(r.get("audio_length_s") or 0), reference=r.get("intended_text", ""))
+             for r in man if not only or r["clip_id"] in only]
+    return clips[:limit] if limit else clips
+
+
+def speech_end(samples, rate: int, frame_s: float = 0.03) -> float:
+    """End of speech in seconds: the end of the last 30 ms frame whose RMS is at least 10% of the loud
+    frames' level (95th percentile). A plain energy rule: the clips are clean, close-talk recordings."""
+    n = max(1, int(rate * frame_s))
+    rms = []
+    for i in range(0, len(samples), n):
+        fr = samples[i:i + n]
+        rms.append(math.sqrt(sum(float(x) * float(x) for x in fr) / max(1, len(fr))))
+    if not rms:
+        return 0.0
+    loud = sorted(rms)[min(len(rms) - 1, int(0.95 * len(rms)))]
+    if loud <= 0:
+        return 0.0
+    last = max(i for i, r in enumerate(rms) if r >= 0.1 * loud)
+    return min(len(samples) / rate, (last + 1) * frame_s)
+
+
+# --- The loop ----------------------------------------------------------------------------------------
 @dataclass
 class Timing:
-    start_delay: float = START_DELAY_S
-    tail: float = TAIL_S
-    settle: float = SETTLE_S
-    timeout: float = TIMEOUT_S
-    ready_timeout: float = READY_TIMEOUT_S
-    gap: float = GAP_S
-    poll: float = POLL_S
-    pad_ms: int = PAD_MS
-    timed: bool = True  # False: accuracy only; the times are still written but are not a measurement
+    pad_ms: int = 300          # silence before and after each clip
+    start_delay: float = 0.5   # after the app opened the microphone
+    tail: float = 4.0          # after the clip, before the release
+    settle: float = 2.0        # text unchanged this long = done
+    timeout: float = 30.0      # after the release
+    quiet: float = 5.0         # after a non-ok outcome: watch for late text before the next clip
+    ready_timeout: float = 5.0
+    gap: float = 1.0
+    poll: float = 0.02
+    timed: bool = True         # False: accuracy only (a machine whose speed doesn't count)
 
 
 def accuracy_only() -> Timing:
-    """For machines whose speed isn't representative (a shared CI runner): the same audio, hold and tail,
-    but a long wait for the text, so a slow machine costs time, not accuracy. Rows are marked timed=0 and
-    `summarize` reports no latency for them."""
-    return Timing(settle=3.0, timeout=120.0, timed=False)
+    """Same audio, hold and tail; a longer wait for text, so a slow machine costs time, not accuracy."""
+    return Timing(settle=3.0, timeout=60.0, quiet=10.0, timed=False)
 
 
-class ClipError(Exception):
-    """This attempt failed (focus lost, document not empty...); the clip is retried."""
+class InfraError(Exception):
+    def __init__(self, status: str, msg: str) -> None:
+        assert status in INFRA_ERRORS
+        super().__init__(msg)
+        self.status = status
 
 
 class Clock:
@@ -201,89 +216,149 @@ class Clock:
 
 
 class Target:
-    """Where the text lands. prepare() empties it and brings it to the front; read() returns its text,
-    or raises ClipError if it lost the focus."""
+    """Where the text lands. prepare(): empty it, bring it to the front, check (InfraError err_target).
+    read(): its text (InfraError err_read if Accessibility fails). verify(): still the focused target."""
 
     def prepare(self) -> None: ...
     def read(self) -> str: ...
+    def verify(self) -> bool:
+        return True
 
 
 class Driver:
     """How the app is started and stopped, and how the audio reaches it."""
 
-    def before_clip(self, clip: Clip) -> None: ...
-    def start(self) -> None: ...
+    def load(self, clip: Clip) -> None:
+        """Prepare the clip's audio; set clip.speech_end_s."""
+    def press(self) -> float:
+        """Start the dictation; returns when the start event was posted."""
+        raise NotImplementedError
     def mic_open(self) -> bool | None:
-        """True once the app is capturing; None if this driver can't tell (then the fixed delay only)."""
+        """True once some process is capturing; None if this driver can't tell (fixed delay only)."""
         return None
-    def feed(self, clip: Clip) -> None: ...
-    def stop(self) -> None: ...
-    def reset(self) -> None:
-        """After a failed attempt: make sure no key is left held."""
+    def play(self, clip: Clip) -> float:
+        """Start playback (non-blocking); returns when it started."""
+        return 0.0
+    def playing(self) -> bool:
+        return False
+    def play_error(self) -> str | None:
+        return None
+    def release(self) -> float:
+        """Stop the dictation; returns when the stop event was posted."""
+        raise NotImplementedError
+    def recover(self, restart: bool) -> None:
+        """Make the app idle: release any held key; restart=True restarts the app."""
 
 
 @dataclass
 class Result:
-    status: str  # ok | empty | error
+    status: str
     transcript: str = ""
     ready_s: float | None = None
+    speech_end_s: float | None = None
+    e2t_s: float | None = None
+    post_stop_s: float | None = None
     first_text_s: float | None = None
-    finalize_s: float | None = None
     error: str = ""
 
 
-def wait_text(target: Target, clock: Clock, t_up: float, timing: Timing) -> Result:
-    """Polls until the text is non-empty and unchanged for `settle` seconds, or `timeout` after key-up."""
-    text, first, last = "", None, None
-    while True:
-        now = clock.now()
-        cur = target.read()
-        if cur != text:
-            text, last = cur, now
-            if first is None and cur.strip():
-                first = now
-        if text.strip() and last is not None and now - last >= timing.settle:
-            break
-        if now - t_up >= timing.timeout:
-            break
-        clock.sleep(timing.poll)
-    if not text.strip():
-        return Result("empty", error=f"no text within {timing.timeout:g} s of key-up")
-    return Result("ok", text.strip(), first_text_s=round(first - t_up, 3), finalize_s=round(last - t_up, 3))
+def _r(x: float | None) -> float | None:
+    return None if x is None else round(x, 3)
 
 
 def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: Timing) -> Result:
+    """One attempt. Raises InfraError for a fault the harness, not the app, is responsible for."""
     target.prepare()
-    driver.before_clip(clip)
-    t_down = clock.now()
-    driver.start()
+    driver.load(clip)
+    t_down = driver.press()
     ready = None
     while True:
         state = driver.mic_open()
         if state is None:
             break
         if state:
-            ready = round(clock.now() - t_down, 3)
+            ready = clock.now() - t_down
             break
         if clock.now() - t_down >= timing.ready_timeout:
-            driver.stop()
-            raise ClipError(f"the app didn't open the microphone within {timing.ready_timeout:g} s")
+            driver.release()
+            raise InfraError("err_ready", f"no process opened the microphone within {timing.ready_timeout:g} s")
         clock.sleep(0.005)
     clock.sleep(timing.start_delay)
-    driver.feed(clip)
-    clock.sleep(timing.tail)
-    t_up = clock.now()
-    driver.stop()
-    res = wait_text(target, clock, t_up, timing)
-    res.ready_s = ready
+
+    text, first, last = "", None, None
+
+    def poll() -> None:
+        nonlocal text, first, last
+        cur = target.read()
+        if cur != text:
+            text, last = cur, clock.now()
+            if first is None and cur.strip():
+                first = last
+
+    t_play = driver.play(clip)
+    end_of_speech = t_play + timing.pad_ms / 1000 + (clip.speech_end_s if clip.speech_end_s is not None
+                                                     else clip.audio_s)
+    play_until = t_play + clip.audio_s + 2 * timing.pad_ms / 1000
+    while clock.now() < play_until or driver.playing():
+        poll()
+        clock.sleep(timing.poll)
+    if (err := driver.play_error()):
+        driver.release()
+        raise InfraError("err_audio", f"playback failed: {err}")
+    while clock.now() < play_until + timing.tail:
+        poll()
+        clock.sleep(timing.poll)
+    t_stop = driver.release()
+    if not target.verify():
+        raise InfraError("err_target", "the document lost the front while dictating")
+    status = "empty"
+    while True:
+        poll()
+        now = clock.now()
+        if text.strip() and now - last >= timing.settle:
+            status = "ok"
+            break
+        if now - t_stop >= timing.timeout:
+            status = "partial" if text.strip() else "empty"
+            break
+        clock.sleep(timing.poll)
+    if not target.verify():
+        raise InfraError("err_target", "the document lost the front while waiting for text")
+    res = Result(status, text.strip(), ready_s=_r(ready), speech_end_s=_r(clip.speech_end_s))
+    if status in ("ok", "partial"):
+        res.e2t_s, res.post_stop_s = _r(last - end_of_speech), _r(last - t_stop)
+        res.first_text_s = _r(first - end_of_speech)
+    if status != "ok":
+        # A quiet period: anything that arrives now belongs to this clip, not the next.
+        before, t_q = text, clock.now()
+        while clock.now() - t_q < timing.quiet:
+            poll()
+            clock.sleep(timing.poll)
+        if status == "empty" and text.strip():
+            res = Result("late", text.strip(), ready_s=_r(ready), speech_end_s=_r(clip.speech_end_s),
+                         error=f"text arrived after the {timing.timeout:g} s deadline")
+        elif status == "partial":
+            res.error = "text still changing at the deadline" + (" and after it" if text != before else "")
+        else:
+            res.error = f"no text within {timing.timeout:g} s of the release"
     return res
 
 
-def load_done(path: pathlib.Path) -> dict[str, dict]:
+def fingerprint(**parts) -> str:
+    """A short digest of everything a run's results depend on (app config, binary hash, harness version,
+    timing, dataset, machine label, selection). Resume and scoring refuse rows from another fingerprint."""
+    return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def load_rows(path: pathlib.Path) -> dict[str, dict]:
     if not path.exists():
         return {}
     with path.open(newline="", encoding="utf-8") as fh:
-        return {r["clip_id"]: r for r in csv.DictReader(fh)}
+        rows = list(csv.DictReader(fh))
+    ids = [r["clip_id"] for r in rows]
+    if len(ids) != len(set(ids)):
+        raise SystemExit(f"{path}: duplicate clip ids")
+    return {r["clip_id"]: r for r in rows}
 
 
 def write_rows(path: pathlib.Path, rows: dict[str, dict]) -> None:
@@ -301,73 +376,47 @@ def fmt(v) -> str:
 
 
 def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, timing: Timing, out: pathlib.Path,
-            *, app: str, mode: str, driver_name: str, attempts: int = 2, warmup: int = 0, machine: str = "",
-            log=print) -> dict[str, dict]:
-    """Runs every clip not already `ok` in `out` (resume), up to `attempts` tries each (an empty result is
-    retried too), writing the CSV after each clip. First `warmup` dictations of the first clip, not
-    recorded, so a local model is loaded before anything is timed. Returns the rows by clip_id."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    rows = load_done(out)
-    for w in range(warmup if clips else 0):
-        try:
-            res = run_clip(clips[0], driver, target, clock, timing)
-            log(f"warm-up {w + 1}/{warmup}: {res.status} finalize={fmt(res.finalize_s)} (not recorded)")
-        except ClipError as e:
-            driver.reset()
-            log(f"warm-up {w + 1}/{warmup}: {e}")
-        clock.sleep(timing.gap)
+            *, run: dict, restart_after_ambiguous: bool, attempts: int = 3, log=print) -> dict[str, dict]:
+    """Runs the clips into out/results.csv, with out/run.json describing the run (`run`, which must carry
+    a "fingerprint"). A rerun resumes only with the same fingerprint, and keeps only rows of these clips.
+    App outcomes are final; infrastructure faults are retried. Returns the rows by clip_id."""
+    out.mkdir(parents=True, exist_ok=True)
+    meta_path, rows_path = out / "run.json", out / "results.csv"
+    if meta_path.exists():
+        old = json.loads(meta_path.read_text())
+        if old.get("fingerprint") != run["fingerprint"]:
+            raise SystemExit(f"{out} holds a different run ({old.get('fingerprint')} vs {run['fingerprint']}): "
+                             "use a new output folder")
+    meta_path.write_text(json.dumps(run, indent=1, sort_keys=True) + "\n")
+    wanted = {c.clip_id for c in clips}
+    rows = {k: v for k, v in load_rows(rows_path).items() if k in wanted}
+    write_rows(rows_path, rows)
     for i, clip in enumerate(clips, 1):
-        if rows.get(clip.clip_id, {}).get("status") == "ok":
+        if rows.get(clip.clip_id, {}).get("status") in APP_OUTCOMES:
             continue
-        res, tries = Result("error", error="not run"), 0
+        res, tries = Result("err_target", error="not run"), 0
         for tries in range(1, attempts + 1):
             try:
                 res = run_clip(clip, driver, target, clock, timing)
-            except ClipError as e:
-                driver.reset()
-                res = Result("error", error=str(e))
+            except InfraError as e:
+                res = Result(e.status, error=str(e))
             if res.status == "ok":
                 break
-            clock.sleep(timing.gap + timing.settle)
+            ambiguous_toggle = restart_after_ambiguous and res.status != "ok"
+            driver.recover(restart=ambiguous_toggle or res.status in ("partial", "late"))
+            if res.status in APP_OUTCOMES:
+                break
+            clock.sleep(timing.gap)
         rows[clip.clip_id] = {
-            "app": app, "mode": mode, "driver": driver_name, "machine": machine, "timed": int(timing.timed),
-            "clip_id": clip.clip_id, "status": res.status,
-            "attempts": tries, "transcript": res.transcript, "audio_s": round(clip.audio_s, 3),
-            "ready_s": fmt(res.ready_s), "first_text_s": fmt(res.first_text_s), "finalize_s": fmt(res.finalize_s),
+            "clip_id": clip.clip_id, "status": res.status, "attempts": tries, "transcript": res.transcript,
+            "audio_s": round(clip.audio_s, 3), "speech_end_s": fmt(res.speech_end_s), "ready_s": fmt(res.ready_s),
+            "e2t_s": fmt(res.e2t_s), "post_stop_s": fmt(res.post_stop_s), "first_text_s": fmt(res.first_text_s),
             "error": res.error, "run_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
-        write_rows(out, rows)
-        log(f"[{i}/{len(clips)}] {clip.clip_id} {res.status} tries={tries} ready={fmt(res.ready_s)} "
-            f"finalize={fmt(res.finalize_s)} chars={len(res.transcript)} {res.error}")
+        write_rows(rows_path, rows)
+        log(f"[{i}/{len(clips)}] {clip.clip_id} {res.status} tries={tries} e2t={fmt(res.e2t_s)} "
+            f"chars={len(res.transcript)} {res.error}")
         clock.sleep(timing.gap)
     return rows
-
-
-def load_clips(folder: pathlib.Path, limit: int | None = None, only: set[str] | None = None,
-               shard: tuple[int, int] | None = None) -> list[Clip]:
-    """Clips in manifest order (manifest.csv from fetch_dataset.py: file, clip_id, audio_length_s,
-    intended_text)."""
-    with (folder / "manifest.csv").open(newline="", encoding="utf-8") as fh:
-        man = list(csv.DictReader(fh))
-    clips = []
-    for r in man:
-        if only and r["clip_id"] not in only:
-            continue
-        p = folder / pathlib.Path(r.get("file") or f"{r['clip_id']}.flac").name
-        clips.append(Clip(r["clip_id"], p, float(r.get("audio_length_s") or 0), r.get("intended_text", "")))
-    if shard:  # (k, n): every n-th clip from the k-th, so shards are similar mixes of the set
-        clips = clips[shard[0]::shard[1]]
-    return clips[:limit] if limit else clips
-
-
-def parse_shard(spec: str | None) -> tuple[int, int] | None:
-    """'2/4' -> (1, 4): the second of four shards."""
-    if not spec:
-        return None
-    k, _, n = spec.partition("/")
-    k_, n_ = int(k), int(n)
-    if not 1 <= k_ <= n_:
-        raise ValueError(f"shard {spec}: want k/n with 1 <= k <= n")
-    return k_ - 1, n_
 
 
 # --- The stub app (dry run and tests) ----------------------------------------------------------------
@@ -384,21 +433,23 @@ class FakeClock(Clock):
 
 @dataclass
 class StubApp:
-    """A dictation app on a simulated clock: the microphone opens `open_delay` after key-down (0 when warm),
-    it hears what is played while it is open, and `latency` after key-up it pastes the clip's reference
-    text if it heard the whole clip (a prefix otherwise, nothing if it heard nothing)."""
+    """A dictation app on a simulated clock. The microphone opens `open_delay` after the press (at once
+    when warm); it hears what plays while it is open; `latency` after the release it pastes the clip's
+    reference if it heard all of it (the words it heard otherwise), optionally in pieces. `streaming`
+    pastes the words as they are spoken instead. `toggle` apps start and stop on a tap."""
     clock: FakeClock
     open_delay: float = 0.3
     latency: float = 1.2
     warm: bool = False
     never_opens: bool = False
     paste_in_chunks: int = 1
+    streaming: bool = False
     pressed_at: float | None = None
-    heard: tuple[float, float] | None = None
     played: tuple[float, float, Clip] | None = None
     pending: list[tuple[float, str]] = field(default_factory=list)
     text: str = ""
     presses: int = 0
+    restarts: int = 0
 
     def key(self, down: bool) -> None:
         now = self.clock.now()
@@ -410,13 +461,12 @@ class StubApp:
             return
         open_at = self.pressed_at + (0 if self.warm else self.open_delay)
         self.pressed_at = None
-        if self.never_opens or not self.played:
+        if self.never_opens or not self.played or self.streaming:
             return
         p0, p1, clip = self.played
         heard = max(0.0, min(now, p1) - max(open_at, p0)) / max(p1 - p0, 1e-9)
-        ref = clip.reference
-        words = ref.split()
-        out = " ".join(words[:round(len(words) * heard)]) if heard < 0.999 else ref
+        words = clip.reference.split()
+        out = " ".join(words[:round(len(words) * heard)]) if heard < 0.999 else clip.reference
         if out:
             n = max(1, self.paste_in_chunks)
             step = math.ceil(len(out) / n)
@@ -429,10 +479,14 @@ class StubApp:
             return False
         return self.warm or self.clock.now() >= self.pressed_at + self.open_delay
 
-    def play(self, clip: Clip, seconds: float) -> None:
+    def play(self, clip: Clip, seconds: float) -> float:
         t0 = self.clock.now()
-        self.clock.sleep(seconds)
-        self.played = (t0, self.clock.now(), clip)
+        self.played = (t0, t0 + seconds, clip)
+        if self.streaming and clip.reference:
+            words = clip.reference.split()
+            for i in range(1, len(words) + 1):
+                self.pending.append((t0 + seconds * i / len(words), " ".join(words[:i])))
+        return t0
 
     def visible_text(self) -> str:
         now = self.clock.now()
@@ -442,23 +496,36 @@ class StubApp:
 
 
 class StubDriver(Driver):
-    def __init__(self, app: StubApp, pad_ms: int = PAD_MS) -> None:
-        self.app, self.pad_ms = app, pad_ms
+    def __init__(self, app: StubApp, pad_ms: int = 300) -> None:
+        self.app, self.pad_ms, self.until = app, pad_ms, 0.0
 
-    def start(self) -> None:
+    def load(self, clip: Clip) -> None:
+        clip.speech_end_s = clip.speech_end_s if clip.speech_end_s is not None else max(0.0, clip.audio_s - 0.2)
+
+    def press(self) -> float:
         self.app.key(True)
+        return self.app.clock.now()
 
     def mic_open(self) -> bool | None:
         return self.app.mic_open()
 
-    def feed(self, clip: Clip) -> None:
-        self.app.play(clip, clip.audio_s + 2 * self.pad_ms / 1000)
+    def play(self, clip: Clip) -> float:
+        secs = clip.audio_s + 2 * self.pad_ms / 1000
+        self.until = self.app.clock.now() + secs
+        return self.app.play(clip, secs)
 
-    def stop(self) -> None:
+    def playing(self) -> bool:
+        return self.app.clock.now() < self.until
+
+    def release(self) -> float:
         self.app.key(False)
+        return self.app.clock.now()
 
-    def reset(self) -> None:
+    def recover(self, restart: bool) -> None:
         self.app.pressed_at = None
+        if restart:
+            self.app.restarts += 1
+            self.app.pending = []
 
 
 class StubTarget(Target):
@@ -466,534 +533,17 @@ class StubTarget(Target):
         self.app = app
 
     def prepare(self) -> None:
-        self.app.text, self.app.pending = "", []
+        self.app.text = ""
 
     def read(self) -> str:
         return self.app.visible_text()
 
 
-def dry_run(out: pathlib.Path, n: int = 5, latency: float = 1.2, log=print) -> dict[str, dict]:
+def dry_run(out: pathlib.Path, n: int = 5, log=print) -> dict[str, dict]:
     clock = FakeClock()
-    app = StubApp(clock, latency=latency)
-    clips = [Clip(f"stub{i:03d}", pathlib.Path(f"stub{i:03d}.flac"), 2.0 + i, f"stub clip number {i} says hello")
+    app = StubApp(clock)
+    clips = [Clip(f"stub{i:03d}", pathlib.Path(f"stub{i:03d}.flac"), 2.0 + i, reference=f"stub clip {i} says hello")
              for i in range(1, n + 1)]
-    return run_all(clips, StubDriver(app), StubTarget(app), clock, Timing(), out, app="stub", mode="dry-run",
-                   driver_name="stub", log=log)
-
-
-# --- macOS: keys, audio, TextEdit --------------------------------------------------------------------
-class MacKeys:
-    def __init__(self, keys: list[Key]) -> None:
-        import Quartz
-        self.Q, self.keys, self.held = Quartz, keys, False
-
-    def _post(self, down: bool) -> None:
-        Q = self.Q
-        for code, is_down, flags, is_flags in key_events(self.keys, down):
-            ev = Q.CGEventCreateKeyboardEvent(None, code, is_down)
-            if is_flags:
-                Q.CGEventSetType(ev, Q.kCGEventFlagsChanged)
-            Q.CGEventSetFlags(ev, flags)
-            Q.CGEventPost(Q.kCGHIDEventTap, ev)
-            time.sleep(0.01)
-
-    def down(self) -> None:
-        self.held = True
-        self._post(True)
-
-    def up(self) -> None:
-        self._post(False)
-        self.held = False
-
-    def tap(self) -> None:
-        self.down()
-        time.sleep(0.08)
-        self.up()
-
-
-class CoreAudio:
-    """BlackHole lookups through the CoreAudio HAL (ctypes; pyobjc doesn't wrap it)."""
-
-    def __init__(self) -> None:
-        import ctypes
-        import ctypes.util
-        self.c = ctypes
-        self.ca = ctypes.CDLL(ctypes.util.find_library("CoreAudio"))
-        self.cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
-
-        class Addr(ctypes.Structure):
-            _fields_ = [("selector", ctypes.c_uint32), ("scope", ctypes.c_uint32), ("element", ctypes.c_uint32)]
-        self.Addr = Addr
-        u32p = ctypes.POINTER(ctypes.c_uint32)
-        self.ca.AudioObjectGetPropertyDataSize.argtypes = [ctypes.c_uint32, ctypes.POINTER(Addr), ctypes.c_uint32,
-                                                           ctypes.c_void_p, u32p]
-        self.ca.AudioObjectGetPropertyData.argtypes = [ctypes.c_uint32, ctypes.POINTER(Addr), ctypes.c_uint32,
-                                                       ctypes.c_void_p, u32p, ctypes.c_void_p]
-        self.ca.AudioObjectSetPropertyData.argtypes = [ctypes.c_uint32, ctypes.POINTER(Addr), ctypes.c_uint32,
-                                                       ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
-        self.cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
-        self.cf.CFRelease.argtypes = [ctypes.c_void_p]
-
-    def addr(self, sel: str, scope: str = "glob"):
-        return self.Addr(int.from_bytes(sel.encode(), "big"), int.from_bytes(scope.encode(), "big"), 0)
-
-    def u32(self, obj: int, sel: str, scope: str = "glob") -> int | None:
-        c = self.c
-        val, size = c.c_uint32(0), c.c_uint32(4)
-        a = self.addr(sel, scope)
-        err = self.ca.AudioObjectGetPropertyData(obj, c.byref(a), 0, None, c.byref(size), c.byref(val))
-        return None if err else val.value
-
-    def name(self, dev: int) -> str:
-        c = self.c
-        ref, size = c.c_void_p(), c.c_uint32(c.sizeof(c.c_void_p))
-        a = self.addr("lnam")
-        if self.ca.AudioObjectGetPropertyData(dev, c.byref(a), 0, None, c.byref(size), c.byref(ref)):
-            return ""
-        buf = c.create_string_buffer(512)
-        self.cf.CFStringGetCString(ref, buf, 512, 0x08000100)
-        self.cf.CFRelease(ref)
-        return buf.value.decode()
-
-    def inputs(self) -> dict[str, int]:
-        c = self.c
-        a, size = self.addr("dev#"), c.c_uint32(0)
-        self.ca.AudioObjectGetPropertyDataSize(1, c.byref(a), 0, None, c.byref(size))
-        n = size.value // 4
-        ids = (c.c_uint32 * n)()
-        self.ca.AudioObjectGetPropertyData(1, c.byref(a), 0, None, c.byref(size), ids)
-        out = {}
-        for d in ids:
-            s, sa = c.c_uint32(0), self.addr("stm#", "inpt")
-            self.ca.AudioObjectGetPropertyDataSize(d, c.byref(sa), 0, None, c.byref(s))
-            if s.value:
-                out[self.name(d)] = d
-        return out
-
-    def default_input_name(self) -> str:
-        dev = self.u32(1, "dIn ")
-        return self.name(dev) if dev else ""
-
-    def set_default_input(self, dev: int) -> None:
-        c = self.c
-        val, a = c.c_uint32(dev), self.addr("dIn ")
-        if self.ca.AudioObjectSetPropertyData(1, c.byref(a), 0, None, 4, c.byref(val)):
-            raise SystemExit("couldn't set the default input")
-
-    def running_somewhere(self, dev: int) -> bool:
-        return bool(self.u32(dev, "gone"))
-
-
-class BlackHoleDriver(Driver):
-    """The black-box path: the app's hotkey, the clip played into BlackHole 2ch, the mic-open signal."""
-
-    def __init__(self, app: App, timing: Timing, device: str = "BlackHole 2ch") -> None:
-        import numpy as np
-        import sounddevice as sd
-        self.np, self.sd, self.app, self.timing = np, sd, app, timing
-        self.keys = MacKeys(parse_hotkey(app.hotkey))
-        self.ca = CoreAudio()
-        inputs = self.ca.inputs()
-        hit = [d for n, d in inputs.items() if device.lower() in n.lower()]
-        if not hit:
-            raise SystemExit(f"no input device '{device}' (inputs: {list(inputs)})")
-        self.bh_in = hit[0]
-        self.out_dev = next((i for i, d in enumerate(sd.query_devices())
-                             if device.lower() in d["name"].lower() and d["max_output_channels"] > 0), None)
-        if self.out_dev is None:
-            raise SystemExit(f"no output device '{device}'")
-        self.rate = int(sd.query_devices(self.out_dev)["default_samplerate"])
-        self.channels = sd.query_devices(self.out_dev)["max_output_channels"]
-        self.audio = None
-
-    def before_clip(self, clip: Clip) -> None:
-        import soundfile as sf
-        import soxr
-        np = self.np
-        a, sr = sf.read(clip.path, dtype="float32", always_2d=True)
-        a = a.mean(axis=1)
-        if sr != self.rate:
-            a = soxr.resample(a, sr, self.rate).astype("float32")
-        peak = float(np.abs(a).max()) if a.size else 0.0
-        if peak > 1.0:
-            a /= peak
-        pad = np.zeros(int(self.rate * self.timing.pad_ms / 1000), dtype="float32")
-        self.audio = np.repeat(np.concatenate([pad, a, pad])[:, None], self.channels, axis=1)
-
-    def start(self) -> None:
-        if self.app.mode == "toggle":
-            self.keys.tap()
-        else:
-            self.keys.down()
-
-    def mic_open(self) -> bool | None:
-        return self.ca.running_somewhere(self.bh_in)
-
-    def feed(self, clip: Clip) -> None:
-        self.sd.play(self.audio, self.rate, device=self.out_dev, blocking=True)
-
-    def stop(self) -> None:
-        if self.app.mode == "toggle":
-            self.keys.tap()
-        elif self.keys.held:
-            self.keys.up()
-
-    def reset(self) -> None:
-        if self.keys.held:
-            self.keys.up()
-
-
-class TextEditTarget(Target):
-    """A plain-text TextEdit document (`scratch`), emptied and read through Accessibility."""
-
-    def __init__(self, scratch: pathlib.Path) -> None:
-        import AppKit
-        import ApplicationServices as AS
-        self.AK, self.AS, self.scratch = AppKit, AS, scratch
-        scratch.parent.mkdir(parents=True, exist_ok=True)
-        if not scratch.exists():  # never rewritten while open: TextEdit would report a conflicting change
-            scratch.write_text("")
-        self.area = self.window = None
-        # A fresh TextEdit with only the scratch document, so nothing else can hold the keyboard focus.
-        subprocess.run(["pkill", "-x", "TextEdit"], check=False)
-        time.sleep(1)
-        subprocess.run(["open", "-F", "-a", "TextEdit", str(scratch)], check=False)
-
-    def _get(self, el, attr):
-        err, val = self.AS.AXUIElementCopyAttributeValue(el, attr, None)
-        return val if err == 0 else None
-
-    def _find_area(self):
-        apps = self.AK.NSRunningApplication.runningApplicationsWithBundleIdentifier_("com.apple.TextEdit")
-        if not apps:
-            raise ClipError("TextEdit isn't running")
-        el = self.AS.AXUIElementCreateApplication(apps[0].processIdentifier())
-        wins = self._get(el, "AXWindows") or []
-        win = next((w for w in wins if str(self._get(w, "AXTitle") or "").startswith(self.scratch.name)), None)
-        win = win or self._get(el, "AXFocusedWindow") or self._get(el, "AXMainWindow")
-        self.window = win
-
-        def find(node, depth=0):
-            if node is None or depth > 8:
-                return None
-            if self._get(node, "AXRole") == "AXTextArea":
-                return node
-            for ch in self._get(node, "AXChildren") or []:
-                hit = find(ch, depth + 1)
-                if hit is not None:
-                    return hit
-            return None
-        return find(win)
-
-    def textedit_frontmost(self) -> bool:
-        """TextEdit's own AXFrontmost. Asked of TextEdit, not the system: system-wide AX queries answer
-        kAXErrorCannotComplete in a VM, and NSWorkspace's answer goes stale in a process without a run loop."""
-        apps = self.AK.NSRunningApplication.runningApplicationsWithBundleIdentifier_("com.apple.TextEdit")
-        if not apps:
-            return False
-        el = self.AS.AXUIElementCreateApplication(apps[0].processIdentifier())
-        return bool(self._get(el, "AXFrontmost"))
-
-    def prepare(self) -> None:
-        subprocess.run(["open", "-a", "TextEdit", str(self.scratch)], check=False)
-        for _ in range(150):  # TextEdit's first launch on a fresh machine can take seconds
-            if self.textedit_frontmost():
-                break
-            time.sleep(0.1)
-        else:
-            raise ClipError("TextEdit didn't come to the front")
-        self.area = self._find_area()
-        if self.area is None:
-            raise ClipError("no text area in TextEdit's front window")
-        if self.window is not None:  # key window, so a paste (Cmd+V) reaches the text view
-            self.AS.AXUIElementPerformAction(self.window, "AXRaise")
-            self.AS.AXUIElementSetAttributeValue(self.window, "AXMain", True)
-            self.AS.AXUIElementSetAttributeValue(self.window, "AXFocused", True)
-        self.AS.AXUIElementSetAttributeValue(self.area, "AXFocused", True)
-        self.AS.AXUIElementSetAttributeValue(self.area, "AXValue", "")
-        time.sleep(0.2)
-        if self.read():  # not settable here: select all and delete, as a person would
-            MacKeys([Key("lcmd", *MODIFIERS["lcmd"]), Key("a", 0)]).tap()
-            MacKeys([Key("delete", 51)]).tap()
-            time.sleep(0.3)
-        if self.read():
-            raise ClipError("the document didn't empty")
-
-    def read(self) -> str:
-        """The document's text. It doesn't check the focus: a paste that went elsewhere shows as no text."""
-        v = self._get(self.area, "AXValue")
-        return "" if v is None else str(v)
-
-
-def mac_preflight(app: App, check_process: bool) -> dict:
-    """What the run depends on, for the record; exits if it's wrong."""
-    env = {"macos": platform.mac_ver()[0], "machine": platform.machine()}
-    for k in ("NSAutomaticSpellingCorrectionEnabled", "NSAutomaticQuoteSubstitutionEnabled",
-              "NSAutomaticDashSubstitutionEnabled", "NSAutomaticTextReplacementEnabled",
-              "NSAutomaticCapitalizationEnabled", "NSAutomaticPeriodSubstitutionEnabled"):
-        v = subprocess.run(["defaults", "read", "-g", k], capture_output=True, text=True).stdout.strip()
-        if v not in ("0", "false"):
-            raise SystemExit(f"Mac-wide text substitution {k} is on: defaults write -g {k} -bool false")
-    ca = CoreAudio()
-    env["default_input"] = ca.default_input_name()
-    if "blackhole" not in env["default_input"].lower():
-        raise SystemExit(f"the default input is '{env['default_input']}', not BlackHole 2ch (bench.sh vm-setup)")
-    if check_process and subprocess.run(["pgrep", "-x", app.process], capture_output=True).returncode:
-        raise SystemExit(f"{app.process} isn't running: open it (past onboarding) and rerun")
-    return env
-
-
-# --- Summaries (host) --------------------------------------------------------------------------------
-def percentile(values: list[float], p: float) -> float | None:
-    if not values:
-        return None
-    s = sorted(values)
-    return s[max(0, math.ceil(p / 100 * len(s)) - 1)]
-
-
-def read_csv(path: pathlib.Path) -> list[dict]:
-    with path.open(newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
-
-
-def summarize_run(run: pathlib.Path, judge: str = "claude") -> dict:
-    """One row per run folder: results.csv (this harness), scored*.csv (eval/judge.py), meta.json (how the
-    app was set up). ZER is over every clip of the scored CSV (a clip with no text counts as wrong)."""
-    meta = json.loads((run / "meta.json").read_text()) if (run / "meta.json").exists() else {}
-    res = read_csv(run / "results.csv") if (run / "results.csv").exists() else []
-    scored_name = {"claude": "scored.csv"}.get(judge, f"scored_{judge}.csv")
-    scored = read_csv(run / scored_name) if (run / scored_name).exists() else []
-    judged = [r for r in scored if r.get("edits", "") != ""]
-    timed = [r for r in res if r.get("status") == "ok" and r.get("timed", "1") != "0"]
-    fin = [float(r["finalize_s"]) for r in timed if r.get("finalize_s")]
-    first = [float(r["first_text_s"]) for r in timed if r.get("first_text_s")]
-    machines = sorted({r.get("machine", "") for r in res} - {""})
-    out = {"run": run.name, **{k: meta.get(k, "") for k in ("app", "mode", "version", "commit", "source",
-                                                             "model", "model_size", "cleanup", "driver")},
-           "machine": meta.get("machine") or ",".join(machines),
-           "timing": "measured" if timed and len(timed) == sum(r.get("status") == "ok" for r in res)
-           else ("not measured" if not timed else "partly"),
-           "clips": len(res), "ok": sum(r.get("status") == "ok" for r in res),
-           "judged": len(judged), "judge": judge,
-           "zer": round(100 * sum(int(r["edits"]) == 0 for r in judged) / len(judged), 1) if judged else None,
-           "amend": (round(100 * sum(int(r["edits"]) for r in judged) / max(1, sum(int(r["chars"]) for r in judged)),
-                           2) if judged else None),
-           "p50_s": percentile(fin, 50), "p95_s": percentile(fin, 95),
-           "first_p50_s": percentile(first, 50), "date": meta.get("date", "")}
-    return out
-
-
-SUMMARY_COLS = ["app", "mode", "model", "model_size", "cleanup", "source", "version", "commit", "machine", "timing",
-                "clips", "ok", "judged", "zer", "amend", "p50_s", "p95_s", "first_p50_s", "date", "run"]
-# Accuracy and speed come from different machines (accuracy: any machine, CI included; speed: a quiet real
-# Mac), so the published tables keep them apart.
-VIEWS = {
-    "all": SUMMARY_COLS,
-    "accuracy": ["app", "mode", "model", "model_size", "cleanup", "source", "version", "commit", "machine", "clips",
-                 "ok", "judged", "zer", "amend", "date", "run"],
-    "speed": ["app", "mode", "model", "model_size", "cleanup", "source", "version", "commit", "machine", "clips", "ok",
-              "p50_s", "p95_s", "first_p50_s", "zer", "date", "run"],
-}
-
-
-def words(text: str) -> list[str]:
-    """Lowercase words with punctuation dropped (apostrophes inside words kept), for WER."""
-    out, cur = [], []
-    for ch in text.lower():
-        if ch.isalnum() or (ch == "'" and cur):
-            cur.append(ch)
-        elif cur:
-            out.append("".join(cur).strip("'"))
-            cur = []
-    if cur:
-        out.append("".join(cur).strip("'"))
-    return [w for w in out if w]
-
-
-def edit_distance(a: list[str], b: list[str]) -> int:
-    prev = list(range(len(b) + 1))
-    for i, x in enumerate(a, 1):
-        cur = [i]
-        for j, y in enumerate(b, 1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x != y)))
-        prev = cur
-    return prev[-1]
-
-
-def wer_counts(results: list[dict], manifest: list[dict]) -> dict:
-    """Word errors against the manifest's spoken (verbatim) and intended texts, as additive counts so shards
-    can be summed: {clips, ok, spoken_errors, spoken_words, intended_errors, intended_words}. A clip with no
-    text counts every reference word as an error. No text leaves this function, only numbers."""
-    res = {r["clip_id"]: r for r in results}
-    out = {"clips": 0, "ok": 0, "spoken_errors": 0, "spoken_words": 0, "intended_errors": 0, "intended_words": 0}
-    for m in manifest:
-        r = res.get(m["clip_id"])
-        if r is None:
-            continue
-        hyp = words(r.get("transcript", "")) if r.get("status") == "ok" else []
-        out["clips"] += 1
-        out["ok"] += r.get("status") == "ok"
-        for key, ref in (("spoken", m.get("spoken_text", "")), ("intended", m.get("intended_text", ""))):
-            rw = words(ref)
-            out[f"{key}_errors"] += edit_distance(rw, hyp)
-            out[f"{key}_words"] += len(rw)
-    return out
-
-
-def wer_summary(counts: list[dict]) -> dict:
-    """Sum shard counts; WER in percent."""
-    tot = {k: sum(c.get(k, 0) for c in counts) for k in counts[0]} if counts else {}
-    for key in ("spoken", "intended"):
-        if tot.get(f"{key}_words"):
-            tot[f"wer_{key}"] = round(100 * tot[f"{key}_errors"] / tot[f"{key}_words"], 2)
-    return tot
-
-
-def summary_table(rows: list[dict], fmt_: str = "md", view: str = "all") -> str:
-    """The summary as Markdown or CSV. The speed view lists only runs whose latency was measured."""
-    cols = VIEWS[view]
-    if view == "speed":
-        rows = [r for r in rows if r.get("timing") == "measured"]
-
-    def cell(v):
-        if v is None or v == "":
-            return "-"
-        return f"{v:.2f}" if isinstance(v, float) and not v.is_integer() else str(v)
-    if fmt_ == "csv":
-        import io
-        buf = io.StringIO()
-        w = csv.DictWriter(buf, cols, extrasaction="ignore", lineterminator="\n")
-        w.writeheader()
-        w.writerows(rows)
-        return buf.getvalue()
-    head = "| " + " | ".join(cols) + " |\n|" + "---|" * len(cols) + "\n"
-    return head + "".join("| " + " | ".join(cell(r.get(c)) for c in cols) + " |\n" for r in rows)
-
-
-def compare_runs(a_scored: list[dict], b_scored: list[dict], tolerance_pts: float) -> dict:
-    """Two runs on the same clips (scored CSVs): ZER of each on the clips both judged, the difference, the
-    discordant clips, and whether the difference is within noise. Noise is twice the standard error of a
-    paired difference, 100*sqrt(discordant)/n (about a 95% interval), never below `tolerance_pts`."""
-    a = {r["clip_id"]: int(r["edits"]) == 0 for r in a_scored if r.get("edits", "") != ""}
-    b = {r["clip_id"]: int(r["edits"]) == 0 for r in b_scored if r.get("edits", "") != ""}
-    both = sorted(set(a) & set(b))
-    n = len(both)
-    if not n:
-        return {"n": 0, "within": False}
-    za = 100 * sum(a[c] for c in both) / n
-    zb = 100 * sum(b[c] for c in both) / n
-    only_a = sum(a[c] and not b[c] for c in both)
-    only_b = sum(b[c] and not a[c] for c in both)
-    tol = max(tolerance_pts, 2 * 100 * math.sqrt(only_a + only_b) / n)
-    return {"n": n, "zer_a": round(za, 1), "zer_b": round(zb, 1), "diff_pts": round(za - zb, 1),
-            "only_a_right": only_a, "only_b_right": only_b, "tolerance_pts": round(tol, 1),
-            "within": abs(za - zb) <= tol}
-
-
-# --- CLI ---------------------------------------------------------------------------------------------
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    r = sub.add_parser("run", help="run the clips through an app (macOS, in the VM's Terminal)")
-    r.add_argument("--app", required=True, choices=sorted(APPS))
-    r.add_argument("--mode", default="local", help="label stored on each row: local, cloud, ...")
-    r.add_argument("--hotkey", help="override the app's hotkey (parse_hotkey spec)")
-    r.add_argument("--toggle", action="store_true", help="tap to start and tap to stop instead of holding")
-    r.add_argument("--clips", type=pathlib.Path, required=True)
-    r.add_argument("-o", "--output", type=pathlib.Path, required=True)
-    r.add_argument("--limit", type=int)
-    r.add_argument("--only", help="comma-separated clip ids")
-    r.add_argument("--shard", help="k/n: run only the k-th of n interleaved shards (parallel CI jobs)")
-    r.add_argument("--attempts", type=int, default=2)
-    r.add_argument("--warmup", type=int, default=1, help="unrecorded dictations before timing (loads the model)")
-    r.add_argument("--check", action="store_true", help="preflight only")
-    r.add_argument("--accuracy-only", action="store_true",
-                   help="a machine whose speed doesn't count (CI): long text timeout, rows marked timed=0")
-    r.add_argument("--machine", default=os.environ.get("BENCH_MACHINE", ""),
-                   help="label stored on each row, e.g. github-macos-15 or mac-vm (BENCH_MACHINE)")
-    si = sub.add_parser("set-input", help="make an input device the default (macOS)")
-    si.add_argument("device", nargs="?", default="BlackHole 2ch")
-    d = sub.add_parser("dry-run", help="the whole loop against the stub app (no macOS)")
-    d.add_argument("-o", "--output", type=pathlib.Path)
-    d.add_argument("-n", type=int, default=5)
-    s = sub.add_parser("summarize", help="one table row per run folder")
-    s.add_argument("runs", nargs="+", type=pathlib.Path)
-    s.add_argument("--judge", default="claude")
-    s.add_argument("--format", default="md", choices=["md", "csv", "json"])
-    s.add_argument("--view", default="all", choices=sorted(VIEWS))
-    w = sub.add_parser("wer", help="WER counts of a results CSV against the manifest (numbers only)")
-    w.add_argument("results", type=pathlib.Path)
-    w.add_argument("manifest", type=pathlib.Path)
-    ws = sub.add_parser("wer-sum", help="sum the JSON counts of several shards")
-    ws.add_argument("counts", nargs="+", type=pathlib.Path)
-    g = sub.add_parser("compare", help="two runs on the same clips: is the ZER difference within noise?")
-    g.add_argument("run_a", type=pathlib.Path)
-    g.add_argument("run_b", type=pathlib.Path)
-    g.add_argument("--judge", default="claude")
-    g.add_argument("--tolerance", type=float, default=3.0, help="floor of the tolerance, ZER points")
-    a = ap.parse_args(argv)
-
-    if a.cmd == "dry-run":
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            out = a.output or pathlib.Path(tmp) / "results.csv"
-            rows = dry_run(out, a.n)
-        bad = [r for r in rows.values() if r["status"] != "ok"]
-        print(f"dry run: {len(rows) - len(bad)}/{len(rows)} ok")
-        return 1 if bad else 0
-    if a.cmd == "set-input":
-        ca = CoreAudio()
-        hit = [d for n, d in ca.inputs().items() if a.device.lower() in n.lower()]
-        if not hit:
-            raise SystemExit(f"no input '{a.device}' (inputs: {list(ca.inputs())})")
-        ca.set_default_input(hit[0])
-        print(f"default input: {ca.default_input_name()}")
-        return 0
-    if a.cmd == "summarize":
-        rows = [summarize_run(p, a.judge) for p in a.runs]
-        print(json.dumps(rows, indent=1) if a.format == "json" else summary_table(rows, a.format, a.view), end="")
-        return 0
-    if a.cmd == "wer":
-        print(json.dumps(wer_counts(read_csv(a.results), read_csv(a.manifest))))
-        return 0
-    if a.cmd == "wer-sum":
-        print(json.dumps(wer_summary([json.loads(p.read_text()) for p in a.counts]), indent=1))
-        return 0
-    if a.cmd == "compare":
-        name = {"claude": "scored.csv"}.get(a.judge, f"scored_{a.judge}.csv")
-        res = compare_runs(read_csv(a.run_a / name), read_csv(a.run_b / name), a.tolerance)
-        print(json.dumps(res, indent=1))
-        return 0 if res.get("within") else 1
-
-    app = APPS[a.app]
-    if a.hotkey or a.toggle:
-        app = App(app.process, a.hotkey or app.hotkey, "toggle" if a.toggle else app.mode, app.bundle, app.notes)
-    env = mac_preflight(app, check_process=True)
-    print(f"preflight ok: {json.dumps(env)}; app {a.app} key {app.hotkey} ({app.mode})")
-    if a.check:
-        return 0
-    timing = accuracy_only() if a.accuracy_only else Timing()
-    return run_mac(BlackHoleDriver(app, timing), "blackhole", timing, a)
-
-
-def run_mac(driver: Driver, driver_name: str, timing: Timing, a: argparse.Namespace) -> int:
-    """The `run` loop on this Mac: TextEdit as the target, the Mac kept awake. `a` carries the clips,
-    output, limit/only, attempts, warmup, app and mode."""
-    target = TextEditTarget(pathlib.Path.home() / "bench" / "scratch.txt")
-    clips = load_clips(a.clips, a.limit, set(a.only.split(",")) if a.only else None,
-                       parse_shard(getattr(a, "shard", None)))
-    caff = subprocess.Popen(["caffeinate", "-dimsu"])
-    try:
-        rows = run_all(clips, driver, target, Clock(), timing, a.output, app=a.app, mode=a.mode,
-                       driver_name=driver_name, attempts=a.attempts, warmup=a.warmup,
-                       machine=getattr(a, "machine", ""))
-    finally:
-        driver.reset()
-        caff.terminate()
-    ok = sum(r["status"] == "ok" for r in rows.values())
-    print(f"done: {ok}/{len(rows)} ok -> {a.output}")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    run = {"fingerprint": fingerprint(app="stub", n=n), "app": "stub", "timing": asdict(Timing())}
+    return run_all(clips, StubDriver(app), StubTarget(app), clock, Timing(), out, run=run,
+                   restart_after_ambiguous=False, log=log)

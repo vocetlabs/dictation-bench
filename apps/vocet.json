@@ -1,0 +1,22 @@
+{
+  "name": "vocet",
+  "version": "main@a7c7a46",
+  "process": "Vocet",
+  "app_path": "/Applications/Vocet.app",
+  "hotkey": "ralt",
+  "mode": "hold",
+  "release": {
+    "build": "github.com/gargankit90/dictation-app at a7c7a46: npm ci && npm run tauri build -- --bundles app",
+    "commit": "a7c7a46"
+  },
+  "model": {
+    "id": "OrukQwen 1.7B Q4_K_M + Gemma 4 E2B Q4_K_M cleanup",
+    "size_mb": 4426,
+    "backend": "llama.cpp on Metal"
+  },
+  "language": "en",
+  "cleanup": "on (Gemma 4 E2B, on device)",
+  "notes": "Setup's 'On this Mac' choice; built from source (no signed release of this commit). Usage sharing off.",
+  "hosted_setup": false,
+  "settings_files": ["~/Library/Application Support/com.dictationapp.desktop/settings.json"]
+}

@@ -1,128 +1,119 @@
 # Mac dictation app bench
 
-Runs the same 151 public speech clips through several Mac dictation apps, as a user would: hold the app's
-key, speak into the microphone, release, and read what the app pastes. It reports the share of
-dictations that need no edit (ZER) and the time from key release to text (latency). Every app gets the
-same audio, timing, target window and scorer, inside a macOS virtual machine.
+Runs the same public speech clips through Mac dictation apps the way a person uses them: press the app's
+key, speak into the microphone, release, and read what the app pastes. Every app gets the same audio,
+timing, target window and scoring. MIT licensed ([LICENSE](LICENSE)).
 
-MIT licensed ([LICENSE](LICENSE)). It ships code and aggregate results only. It doesn't ship the clips, their
-reference texts or any app's transcripts of them: those are CC BY-NC 4.0 and are downloaded at run time from
-their original source. Not affiliated with the dataset's authors, nor with any of the apps measured.
+The repository holds code, app configurations and numeric results. It never holds the clips, their
+reference texts or any app's transcripts: the clips are downloaded from their source at run time, and only
+numbers leave a run.
 
 ## What it measures
 
-For each clip, in the VM's logged-in GUI session:
+For each clip, in a logged-in macOS session:
 
-1. A plain-text TextEdit document is emptied and brought to the front.
-2. The app's dictation key is pressed with real key events (`CGEventPost` at the HID tap; a modifier key
-   is sent as `flagsChanged`, as a keyboard sends it). Hold-to-talk apps get key-down; toggle apps get a
-   tap.
-3. The harness waits until some process opens the virtual microphone (CoreAudio's "device is running
-   somewhere" on BlackHole 2ch), up to 5 s, then 0.5 s more. An app that keeps its microphone open is ready
-   at once.
-4. The clip, padded with 300 ms of silence at each end, plays into **BlackHole 2ch**, the VM's default
-   input. Nothing goes through a speaker.
-5. After a fixed 4 s tail, the key is released (or tapped again).
-6. The document is read through Accessibility every 20 ms until its text has not changed for 2 s (timeout
-   30 s). **Latency** = key release to the last change of the text (`finalize_s`); `first_text_s` = key
-   release to the first text.
+1. A plain-text TextEdit document is emptied, brought to the front and checked.
+2. The app's key is pressed with real key events (`CGEventPost` at the HID tap; a modifier is sent as
+   `flagsChanged`, as a keyboard sends it): key-down for hold-to-talk apps, a tap for toggle apps.
+3. The harness waits until a process opens the virtual microphone (**BlackHole 2ch**, the default input),
+   then 0.5 s.
+4. The clip, padded with 300 ms of silence at each end, plays into BlackHole. From this moment the document
+   is read every 20 ms, so text that appears while speaking is seen too.
+5. 4 s after the clip ends, the key is released (or tapped again).
+6. Reading continues until the text has not changed for 2 s, or 30 s after the release.
 
-Each clip gets up to 2 attempts. One unrecorded dictation runs first so a local model is loaded. The
-timing values match the MIT-licensed [Dictation-harness](https://github.com/VoiceArenaAI/Dictation-harness),
-so numbers are comparable with runs made with it.
+**Outcomes.** `ok` (the text settled), `partial` (still changing at the deadline; scored as it stood),
+`empty` (no text), `late` (text only after the deadline; scored as no output). These are the app's results
+and are never retried. A fault of the harness or machine (the document lost the focus, a failed
+Accessibility read, failed playback, no process opened the microphone) is retried, after the app is made
+idle again. After any outcome but `ok` the harness waits a quiet period, and restarts a toggle app whose
+recording state is then unknown, so a late paste can't land in the next clip.
 
-**Score.** `judge.py` asks an LLM judge for the minimal correction of each draft against the clip's
-intended text, with the [amend-va](https://pypi.org/project/amend-va/) 0.2.1 prompt `v1`, and counts
-character edits with amend-va's `char_edits`. **ZER** = share of the 151 clips with zero edits (a clip with
-no text counts as wrong); **AMEND** = pooled edits / pooled characters. Three judges are supported, all through
-their own CLIs: `claude` (Claude Opus 5.5, `claude -p`), `codex` and `gemini`. Compare runs only under the
-same judge. Single-judge numbers on the public set are unofficial.
+**Accuracy.** Word error rate (WER) against each clip's **intended text** (what the speaker meant to
+write, the headline) and its **spoken text** (verbatim, a diagnostic). Text is Unicode-normalized (NFKC),
+typographic quotes and dashes are folded to ASCII, case and punctuation are ignored. A clip with no output
+counts every reference word as an error. A run is scored only if every selected clip has exactly one app
+outcome; otherwise `score` refuses and says why.
+
+**Speed** (quiet real Macs only, not CI): `e2t` = end of speech in the clip to the last change of the text
+(primary); `post_stop` = key release to the last change. p50 and p95 over `ok` clips, with the failure
+rate (share of clips not `ok`) beside them. End of speech is the end of the last 30 ms frame whose energy
+is at least 10% of the clip's loud frames.
+
+## Run it on GitHub (accuracy)
+
+Fork the repository, enable Actions, and run the **Bench** workflow with an app and `smoke` (one synthetic
+dictation) or `full` (all clips). A GitHub-hosted macOS runner has a logged-in session, so the job installs
+BlackHole, installs the app's signed release, sets it up as its onboarding would, grants its permissions,
+runs the smoke dictation as a gate, then the clips, and scores in the job. Runs there are accuracy-only
+(`--accuracy-only`: a longer text deadline, no latency), since a shared runner's speed says little about a
+Mac. The job uploads `score.json` and `run.json` only.
+
+Apps with an unattended setup (`hosted_setup: true` in `apps/<app>.json`): Handy. The others are set up by
+hand on a local Mac for now.
+
+## Run it on a Mac (accuracy and speed)
+
+Needs macOS 15 on Apple silicon, [uv](https://docs.astral.sh/uv/), [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole)
+installed (system output left on the speakers), and Accessibility for the terminal you run it from.
+
+```sh
+./bench fetch                         # the clips and references from their source (pinned, sha256 checked)
+./bench machine                       # BlackHole as default input, automatic corrections off
+./bench setup --app handy             # install and configure the app; allow Microphone/Accessibility when asked
+./bench run --app handy --smoke       # one synthetic dictation: is the setup right?
+./bench run --app handy --full        # smoke gate, all clips, then score -> out/handy-local/score.json
+./bench verify out/handy-local/score.json
+./bench table out/*/score.json
+```
+
+For speed numbers, use a quiet Mac: no other VMs or builds; note the load average and free memory before and
+after. Quit every other dictation app (several share the same key).
+
+`python3 bench.py dry-run` runs the loop against a simulated app; `./test.sh` runs the tests (standard library
+only, no macOS).
+
+## Apps
+
+Each app runs its maintainer's signed release (Vocet: built from source at the commit in its config) with
+the defaults its onboarding leaves: its default key and activation mode, and its default or first
+recommended local model. `apps/<app>.json` pins the release (URL, sha256, tag), the model, and what is
+known about its settings; `apps/<app>.sh` applies them. Every run records the app's binary hash and the
+hash of its settings files in `run.json`.
+
+| App | Release | Key, mode | Local model |
+| --- | --- | --- | --- |
+| [Handy](https://github.com/cjpais/Handy) | 0.10.1 | Option+Space, hold-or-toggle (held here) | Parakeet Unified EN 0.6B, Q8_0 GGUF (731 MB) |
+| [Muesli](https://github.com/Muesli-HQ/muesli) | 0.8.6 | Right Option, hold | Parakeet Unified EN 0.6B, Core ML (~565 MB) |
+| [FluidVoice](https://github.com/altic-dev/FluidVoice) | 1.6.13 | Right Option, toggle | Parakeet TDT 0.6B, Core ML (~450 MB) |
+| [VoiceInk](https://github.com/Beingpax/VoiceInk) | 2.27 | chosen in onboarding | Parakeet TDT 0.6B v3, Core ML (~450 MB) |
+| [OpenWhispr](https://github.com/OpenWhispr/openwhispr) | 1.12.0 | Fn (Globe), toggle | its onboarding's recommendation |
+| [Vocet](https://github.com/gargankit90/dictation-app) | built at the config's commit | Right Option, hold | OrukQwen 1.7B + Gemma 4 E2B cleanup |
+
+Corrections to an app's configuration are welcome from its maintainers.
 
 ## Files
 
 | File | What it does |
 | --- | --- |
-| `fetch_clips.py` | downloads the clips and references from Hugging Face (pinned revision, sha256 checked) into `clips/` |
-| `harness.py` | the clip loop (`run`, in the VM), `dry-run` (a stub app, no macOS), `summarize`, `compare`, `set-input` |
-| `bench.sh` | host side: VM clone/start/stop, setup, app install, runs, scoring, `publish` |
-| `judge.py`, `judges.py` | the scorer; one cache per judge and model in `.judge-cache/` |
-| `test_harness.py`, `test_judge.py`, `test.sh` | offline tests (standard library only): the loop on a simulated clock, the scorer on fixed strings |
-| `results/` | what is published: `summary.csv`, `summary.md`, and per run `meta.json` (app setup), `host_load.txt`, `vm_load.txt` |
+| `bench`, `bench.py` | the one command (above) |
+| `harness.py` | the clip loop, outcomes and timing (pure Python; runs against a stub app in tests) |
+| `macos.py` | key events, BlackHole, playback, the TextEdit target, app restarts |
+| `score.py` | WER, the completeness checks, `score.json`, the verifier and tables |
+| `fetch_clips.py` | downloads the dataset (pinned revision, sha256 checked) into `clips/` |
+| `apps/` | one config and one setup script per app; `common.sh` holds their helpers |
+| `test_*.py`, `test.sh` | offline tests |
 
-`clips/`, `work/` (per-clip results, transcripts) and `.judge-cache/` are git-ignored and never published.
+`clips/`, `out/` (per-clip results with transcripts) and `work/` are git-ignored.
 
-## Requirements
-
-- An Apple-silicon Mac with [Lume](https://github.com/trycua/cua/tree/main/libs/lume) (macOS VMs on Apple's
-  Virtualization framework), `jq`, `ssh` and [uv](https://docs.astral.sh/uv/).
-- The judge's CLI, logged in (`claude` for the default judge).
-
-## The VM image (once)
-
-The published runs used a VM with this setup; anything equivalent works.
-
-1. `lume create bench-base --os macos --ipsw latest --cpu 4 --memory 8GB --disk-size 80GB` (the runs used
-   macOS 15.6.1), finish Setup Assistant with a local user (`lume`), and turn on automatic login and Remote
-   Login (ssh) with your key.
-2. Install [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole) (0.6.x, the signed installer
-   package), then restart. Leave the system **output** on the VM's speakers, so alert sounds can't reach the
-   microphone.
-3. System Settings → Privacy & Security → **Accessibility**: turn on Terminal (the harness posts keys and
-   reads TextEdit from Terminal). Allow Terminal to control TextEdit if asked.
-4. Never use this image for runs; clone it (`BENCH_BASE_IMAGE=bench-base ./bench.sh vm-create`).
-
-`bench.sh vm-setup` then installs uv in the VM, copies the harness and clips, makes BlackHole the default
-input, and turns off the Mac-wide automatic corrections (capitalisation, spelling, quotes, dashes, text
-replacement, period substitution, inline prediction).
-
-## Reproduce
-
-```sh
-export BENCH_VM=bench-vm BENCH_BASE_IMAGE=bench-base BENCH_SSH_KEY=~/.ssh/<your VM key>
-./bench.sh fetch                          # 151 clips from the original source
-./bench.sh vm-create && ./bench.sh vm-start --timed && ./bench.sh vm-setup
-./bench.sh install ~/Downloads/Handy_0.10.1_aarch64.dmg
-# in the VM: open the app, go through its onboarding, allow Microphone and Accessibility, pick the model
-# (table below), set the input to BlackHole 2ch if the app has its own picker, quit every other app
-./bench.sh check handy                    # preflight: default input, corrections off, app running
-./bench.sh run handy_local handy local --limit 3      # a trial
-./bench.sh run handy_local handy local                # all 151; rerun the same command to resume
-./bench.sh meta handy_local app=handy mode=local model="Parakeet Unified EN 0.6B Q8_0" cleanup=off \
-    source=release version=0.10.1 commit=aca8985190 date=$(date +%F)
-./bench.sh score handy_local
-./bench.sh publish                        # results/summary.csv and summary.md
-```
-
-`python3 harness.py dry-run` checks the loop without a VM; `./test.sh` runs the tests.
-
-**Quiet machine.** Local models are sensitive to load on the host: run with no other VM running
-(`vm-start --timed` refuses otherwise), no builds, and check `host_load.txt` (load average and free memory
-at the start and end of each run); rerun an app if the host was busy.
-
-## Apps
-
-The app key, mode and model are each app's own default or recommendation (from its source at the release
-tag). Only the app under test runs. Where an app has its own microphone picker, it is set to BlackHole 2ch.
-
-| App | Release | Key, mode | Local model |
-| --- | --- | --- | --- |
-| [Handy](https://github.com/cjpais/Handy) | 0.10.1 (`aca8985190`) | Option+Space, hold | Parakeet Unified EN 0.6B, Q8_0 GGUF (731 MB) |
-| [OpenWhispr](https://github.com/OpenWhispr/openwhispr) | 1.12.0 (`ad74240688`) | Fn (Globe), tap | the model its onboarding recommends (see `results/<run>/meta.json`) |
-| [Muesli](https://github.com/Muesli-HQ/muesli) | 0.8.6 (`ecc2af2654`) | Right Option, hold | Parakeet Unified EN 0.6B, Core ML (~565 MB) |
-| [FluidVoice](https://github.com/altic-dev/FluidVoice) | 1.6.13 (`9912eca0d9`) | Right Option, tap | Parakeet TDT 0.6B, Core ML (~450 MB) |
-| [VoiceInk](https://github.com/Beingpax/VoiceInk) | 2.27 (`b5d1be9a7c`) | set in onboarding | Parakeet TDT 0.6B v3, Core ML (~450 MB) |
-| [Vocet](https://github.com/gargankit90/dictation-app) | `main` at the run (commit in `meta.json`) | Right Option, hold | OrukQwen 1.7B + Gemma 4 E2B cleanup; cloud: OpenRouter |
-
-Releases are the maintainers' signed builds from each project's GitHub releases page; Vocet is built from
-source. Cloud modes run only where an app can use OpenRouter or an OpenAI-compatible endpoint, with a
-spend-capped key the person running the bench enters in the app inside the VM.
-
-**The VM understates a real Mac.** Four virtual CPUs, 8 GB, a paravirtualised GPU and no Neural Engine:
-Core ML models fall back to the GPU or CPU, so local latencies are upper bounds, and the ranking between local
-apps may differ on a real Mac. Cloud latencies depend on the network more than on the VM.
+**`score.json`** holds the app, its effective configuration, the run fingerprint (everything the results
+depend on: config, binary hash, harness version, timing, dataset, machine), the digest of the results it
+was computed from, and per clip: the outcome, edit and word counts against both references, and latencies.
+`./bench verify` recomputes every headline number from those per-clip numbers.
 
 ## Data
 
-Clips and references: *Dictation Dataset (public test split)*, Hugging Face `VoiceArena/Dictation_Dataset`,
-revision `ab671bb2`, 151 clips, CC BY-NC 4.0. Fetched at run time by `fetch_clips.py`; never redistributed
-here.
+Clips and references: *Dictation Dataset*, public test split, Hugging Face `VoiceArena/Dictation_Dataset`,
+revision `ab671bb2`, 151 clips, licensed CC BY-NC 4.0 by its authors. They are fetched at run time and
+never redistributed here; the dataset's licence governs their use. This project is not affiliated with the
+dataset's authors or with any of the apps.

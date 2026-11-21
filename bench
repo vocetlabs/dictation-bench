@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# The bench's one command: ./bench <command> ... (see bench.py). Needs uv.
+exec uv run --quiet "$(cd "$(dirname "$0")" && pwd)/bench.py" "$@"
