@@ -46,10 +46,13 @@ minute; most batches finish within minutes, the API allows up to 24 hours. The j
 app's draft. Clips with no output are not sent and get no ZER credit. Only numbers are kept (`judge.json`,
 which records the `:batch` variant); the judge's corrections stay in the local, git-ignored `.judge-cache/`,
 keyed by model, prompt version and scorer version, and a batch still pending is resumed by the next run
-instead of submitted again (its id is kept in the run folder, `.judge-batch-pending.json`, until its answers
-are cached; a lock file stops two judges submitting for one run; an expired batch is submitted again; if the
-reply to a submit itself is lost, a rerun pays for that batch again). No headline is given unless every clip has a judgement. Compare runs only under
-the same judge. In a repository of your own, add a `JUDGE_API_KEY` secret and pass it to the workflow's
+instead of submitted again: its id is kept in the run folder (`.judge-batch-pending.json`) until its answers
+are cached, and a run that finds one collects and caches all of that batch's answers before submitting
+anything new. A lock file stops two judges submitting for one run (a dead judge's lock is taken over). If the
+API no longer knows the pending batch (HTTP 404/410: expired, deleted, or another key's), the run stops and
+keeps the record; `./bench judge out/<run> --drop-pending` removes it. If the reply to a submit itself is
+lost, a rerun pays for that batch again. No headline is given unless every clip has a judgement. Compare
+runs only under the same judge. In a repository of your own, add a `JUDGE_API_KEY` secret and pass it to the workflow's
 Judge step (`env: JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}`).
 
 Other paths to the same judge: `--via openrouter-sync` (OpenRouter's synchronous API, full price; it shares

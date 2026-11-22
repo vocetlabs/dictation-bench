@@ -338,39 +338,68 @@ class BatchStateTests(unittest.TestCase):
         return jd.judge_run(self.run, self.man, backend=b, tools=fake_tools(), cache_dir=self.cache, backoff=0,
                             log=self.logs.append, **kw)
 
-    def test_an_expired_or_unknown_batch_is_dropped_and_resubmitted(self):
-        first = FakeBatchApi()
-        self.judge(first)  # learn this run's request keys, then forget the answers
-        keys = [r["custom_id"] for r in first.submits[0]["requests"]]
-        for f in self.cache.glob("*.jsonl"):
-            f.unlink()
+    def pending(self, bid, requests, api):
+        api.batches[bid] = requests
         (self.run / ".judge-batch-pending.json").write_text(json.dumps(
-            {"id": "batch_old", "endpoint": jd.BATCH_URL, "prompt_set": jd.OpenRouterBatchJudge.prompt_set(keys)}))
-        api = FakeBatchApi()
-        get = api.get
+            {"id": bid, "endpoint": jd.BATCH_URL, "prompt_set": "from-an-earlier-run"}))
 
-        def gone_then_ok(url, headers):
-            if url.endswith("batch_old"):
-                raise jd.JudgeError("HTTP 410", 410)
-            return get(url, headers)
-        api.get = gone_then_ok
+    @staticmethod
+    def request(custom_id, intended):
+        return {"custom_id": custom_id, "body": {"messages": [{"role": "system", "content": ""},
+                                                             {"role": "user", "content": f"v1|{intended}|x"}]}}
+
+    def test_a_pending_batch_is_collected_whole_before_anything_new_is_submitted(self):
+        api = FakeBatchApi(polls_before_done=0)
+        # an earlier run's batch: an answer this run doesn't ask for (paid all the same), nothing it does
+        self.pending("batch_old", [self.request("k-not-in-this-run", "Elsewhere.")], api)
         out = self.judge(api)
-        self.assertEqual((out["zer"], len(api.submits)), (33.3, 1))
-        self.assertTrue(any("404/410" in x for x in self.logs))
+        self.assertEqual(out["zer"], 33.3)
+        cached = [json.loads(x)["key"] for x in jd.cache_path(self.cache).read_text().splitlines()]
+        self.assertIn("k-not-in-this-run", cached)  # kept, not stranded
+        self.assertEqual(len(api.submits), 1)  # then one batch for what was still missing
+        self.assertFalse((self.run / ".judge-batch-pending.json").exists())
 
-    def test_a_different_pending_batch_is_left_alone(self):
-        rec = {"id": "batch_other", "endpoint": jd.BATCH_URL, "prompt_set": "0" * 16}
-        (self.run / ".judge-batch-pending.json").write_text(json.dumps(rec))
-        api = FakeBatchApi()
-        out = self.judge(api)
-        self.assertIn("stopped", out["incomplete"])
-        self.assertEqual((len(api.submits), api.polls), (0, 0))
-        self.assertEqual(json.loads((self.run / ".judge-batch-pending.json").read_text()), rec)
-
-    def test_a_second_judge_on_the_same_run_is_refused(self):
-        (self.run / ".judge-batch.lock").write_text("")
+    def test_a_dead_judges_lock_is_taken_over_and_a_live_ones_refuses(self):
+        (self.run / ".judge-batch.lock").write_text("99999999")  # no such process
+        out = self.judge(FakeBatchApi())
+        self.assertEqual(out["zer"], 33.3)
+        self.assertTrue(any("taking over" in x for x in self.logs))
+        (self.run / ".judge-batch.lock").write_text(str(os.getpid()))  # this process: alive
         with self.assertRaisesRegex(jd.JudgeError, "another judge"):
             self.judge(FakeBatchApi())
+
+    def test_an_unreadable_pending_record_stops_the_run_and_is_kept(self):
+        rec = self.run / ".judge-batch-pending.json"
+        rec.write_text('{"id": "batch_')  # torn
+        api = FakeBatchApi()
+        with self.assertRaisesRegex(jd.JudgeError, "judge-batch-pending.json"):
+            self.judge(api)
+        self.assertEqual((rec.read_text(), len(api.submits)), ('{"id": "batch_', 0))
+        self.assertFalse((self.run / ".judge-batch.lock").exists())
+
+    def test_the_pending_record_is_written_atomically(self):
+        with mock.patch.object(jd.os, "replace", wraps=os.replace) as replace:
+            self.judge(FakeBatchApi())
+        self.assertTrue(any(str(c.args[1]).endswith(".judge-batch-pending.json") for c in replace.call_args_list))
+
+    def test_an_unknown_or_expired_batch_stops_and_only_drop_pending_removes_it(self):
+        api = FakeBatchApi()
+        self.pending("batch_old", [], api)
+        get = api.get
+
+        def gone(url, headers):
+            if url.endswith("batch_old"):
+                raise jd.JudgeError("HTTP 404", 404)
+            return get(url, headers)
+        api.get = gone
+        out = self.judge(api)
+        self.assertIn("stopped", out["incomplete"])
+        self.assertTrue((self.run / ".judge-batch-pending.json").exists())  # never deleted on its own
+        self.assertEqual(len(api.submits), 0)
+        self.assertTrue(any("--drop-pending" in x for x in self.logs))
+        self.assertTrue(jd.drop_pending(self.run, log=self.logs.append))
+        self.assertFalse((self.run / ".judge-batch-pending.json").exists())
+        self.assertEqual(self.judge(api)["zer"], 33.3)
 
     def test_the_pending_record_is_written_before_polling_and_kept_until_answers_are_cached(self):
         seen = {}
@@ -407,6 +436,13 @@ class BatchStateTests(unittest.TestCase):
             self.judge(FakeBatchApi(), limit=0)
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             bench.main(["judge", "out/x", "--no-cache", "--limit", "0"])
+
+    def test_drop_pending_on_the_command_line_removes_the_record_first(self):
+        (self.run / ".judge-batch-pending.json").write_text('{"id": "batch_old"}')
+        with mock.patch.object(jd, "judge_run", return_value={"zer": 1.0}), \
+                mock.patch.dict(os.environ, {"JUDGE_API_KEY": "k"}), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(bench.main(["judge", str(self.run), "--drop-pending"]), 0)
+        self.assertFalse((self.run / ".judge-batch-pending.json").exists())
 
     def test_a_recheck_without_a_fresh_verdict_fails(self):
         none = {"recheck": {"fresh": 0, "compared": 0, "same_zero_edit_verdict": 0, "same_edit_count": 0}}

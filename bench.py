@@ -205,12 +205,14 @@ JUDGE_FILES = {"openrouter": "judge.json", "openrouter-sync": "judge.json", "cla
 
 
 def judge_cmd(run_dir: pathlib.Path, via: str = "openrouter", out_name: str | None = None, use_cache: bool = True,
-              limit: int | None = None) -> int:
+              limit: int | None = None, drop_pending: bool = False) -> int:
     """ZER/AMEND for a finished run. openrouter (default): Claude Opus 5.5's batch variant through OpenRouter's
     Batch API; openrouter-sync: the same model through its synchronous API (both need JUDGE_API_KEY);
     claude-cli: the logged-in Claude Code CLI (`claude -p`, the subscription), no key. --no-cache --limit N
     re-asks N clips and reports how many verdicts match the cache (judge-recheck.json)."""
     import judge as jd
+    if drop_pending and not jd.drop_pending(run_dir):
+        print(f"no pending batch record in {run_dir}")
     if via == "claude-cli":
         backend = jd.ClaudeCliJudge()
     else:
@@ -284,6 +286,8 @@ def main(argv: list[str] | None = None) -> int:
     j.add_argument("--no-cache", action="store_true", help="re-ask without reading or writing the cache; "
                    "reports how many verdicts match the cached ones (use with --limit)")
     j.add_argument("--limit", type=positive_int, help="only the first N clips with text (no headline)")
+    j.add_argument("--drop-pending", action="store_true", help="first remove the run's pending batch record "
+                   "(after a 404/410 or an unreadable record; its answers, if any, are given up)")
     v = sub.add_parser("verify")
     v.add_argument("score_json", type=pathlib.Path)
     t = sub.add_parser("table")
@@ -306,7 +310,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "score":
         return score_cmd(a.run_dir)
     if a.cmd == "judge":
-        return judge_cmd(a.run_dir, a.via, a.out, use_cache=not a.no_cache, limit=a.limit)
+        return judge_cmd(a.run_dir, a.via, a.out, use_cache=not a.no_cache, limit=a.limit,
+                         drop_pending=a.drop_pending)
     if a.cmd == "verify":
         bad = sc.verify(json.loads(a.score_json.read_text()))
         print("consistent" if not bad else "\n".join(bad))
