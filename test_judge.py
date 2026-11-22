@@ -382,6 +382,18 @@ class BatchStateTests(unittest.TestCase):
         finally:
             os.close(fd)
 
+    def test_a_judge_reads_the_cache_only_once_it_holds_the_lock(self):
+        api, real, other = FakeBatchApi(), jd.OpenRouterBatchJudge.take_lock, []
+
+        def other_judge_goes_first(lock):  # it started after this one, but takes the lock first and caches
+            if not other:
+                other.append(None)
+                other[0] = self.judge(api)
+            return real(lock)
+        with mock.patch.object(jd.OpenRouterBatchJudge, "take_lock", staticmethod(other_judge_goes_first)):
+            out = self.judge(api)
+        self.assertEqual((len(api.submits), other[0]["zer"], out["zer"], out["calls"]), (1, 33.3, 33.3, 0))
+
     def test_a_held_lock_refuses_and_a_dead_judges_file_does_not_block(self):
         lock = self.run / ".judge-batch.lock"
         lock.write_text("99999999")  # left by a judge that died: its flock went with it

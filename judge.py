@@ -14,6 +14,7 @@ scorer version and the prompt's hash, so a rerun asks nothing new.
 """
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -260,18 +261,26 @@ class OpenRouterBatchJudge:
             self.sleep(interval)
             waited += interval
 
+    def state(self) -> pathlib.Path:
+        state = self.state_dir or HERE / ".judge-cache"
+        state.mkdir(parents=True, exist_ok=True)
+        return state
+
+    @contextlib.contextmanager
+    def locked(self):
+        """Held by judge_run from before it reads the cache until the answers are in it, so a second judge
+        can't count misses the first is about to cache and pay for them again."""
+        fd = self.take_lock(self.state() / self.LOCK)
+        try:
+            yield
+        finally:
+            os.close(fd)  # releases the flock
+
     def ask_many(self, items, *, attempts=3, backoff=5.0, max_calls=None, log=print):
         """Yields (key, answer, resumed): resumed answers come from a batch an earlier run paid for; the caller
         caches them whatever it asked for. max_calls caps the requests submitted, counted after the pending
-        batch is collected."""
-        state = self.state_dir or HERE / ".judge-cache"
-        state.mkdir(parents=True, exist_ok=True)
-        pending, lock = state / self.PENDING, state / self.LOCK
-        fd = self.take_lock(lock)
-        try:
-            yield from self._ask_many(list(items), pending, attempts, max_calls, log)
-        finally:
-            os.close(fd)  # releases the flock
+        batch is collected. Call it inside locked()."""
+        yield from self._ask_many(list(items), self.state() / self.PENDING, attempts, max_calls, log)
 
     def _ask_many(self, items, pending, attempts, max_calls, log):
         self.stopped, self.calls = False, 0
@@ -418,39 +427,41 @@ def judge_run(run_dir: pathlib.Path, manifest: pathlib.Path, key: str = "", *, b
     run = json.loads((run_dir / "run.json").read_text())
     rows = {r["clip_id"]: r for r in sc.read_csv(run_dir / "results.csv")}
     ref = {m["clip_id"]: m for m in sc.read_csv(manifest)}
-    path = cache_path(cache_dir or HERE / ".judge-cache", backend.cache_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    cache = {}
-    if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                r = json.loads(line)
-                cache[r["key"]] = r["fixed"]
-    entries = []  # (clip id, prompt, intended, cache key) for clips with text
-    no_output = {}
-    for cid in sorted(rows):
-        r, m = rows[cid], ref[cid]
-        if r["status"] not in sc.SCORED_TEXT:  # verified no output: no call, no credit
-            chars = len(m["intended_text"])
-            no_output[cid] = {"clip_id": cid, "status": r["status"], "edits": chars, "chars": chars, "zero_edit": 0}
-            continue
-        prompt = build_prompt(m["intended_text"], r["transcript"], m["spoken_text"], PROMPT_VERSION)
-        k = hashlib.sha256(f"{backend.cache_id}\n{PROMPT_VERSION}\n{JUDGE_VERSION}\n{prompt}".encode()).hexdigest()
-        entries.append((cid, prompt, m["intended_text"], k))
-    if limit:
-        entries = entries[:limit]
+    with getattr(backend, "locked", contextlib.nullcontext)():  # the batch judge's lock, before the cache read
+        path = cache_path(cache_dir or HERE / ".judge-cache", backend.cache_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cache = {}
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    r = json.loads(line)
+                    cache[r["key"]] = r["fixed"]
+        entries = []  # (clip id, prompt, intended, cache key) for clips with text
         no_output = {}
-    ask = list({k: (k, prompt, intended, cid) for cid, prompt, intended, k in entries
-                if not use_cache or k not in cache}.values())  # one request per distinct prompt
-    asked, before, fresh = {k for k, *_ in ask}, dict(cache), {}
-    for k, fixed, resumed in backend.ask_many(ask, attempts=attempts, backoff=backoff, max_calls=max_calls, log=log):
-        if not resumed or (not use_cache and k in asked):  # a resumed recheck's own answers are fresh
-            fresh[k] = fixed
-        if use_cache or resumed:  # an earlier run's paid answers are always kept
-            if k not in cache:
-                with path.open("a", encoding="utf-8") as fh:
-                    fh.write(json.dumps({"key": k, "fixed": fixed}, ensure_ascii=False) + "\n")
-            cache[k] = fixed
+        for cid in sorted(rows):
+            r, m = rows[cid], ref[cid]
+            if r["status"] not in sc.SCORED_TEXT:  # verified no output: no call, no credit
+                chars = len(m["intended_text"])
+                no_output[cid] = {"clip_id": cid, "status": r["status"], "edits": chars, "chars": chars, "zero_edit": 0}
+                continue
+            prompt = build_prompt(m["intended_text"], r["transcript"], m["spoken_text"], PROMPT_VERSION)
+            k = hashlib.sha256(f"{backend.cache_id}\n{PROMPT_VERSION}\n{JUDGE_VERSION}\n{prompt}".encode()).hexdigest()
+            entries.append((cid, prompt, m["intended_text"], k))
+        if limit:
+            entries = entries[:limit]
+            no_output = {}
+        ask = list({k: (k, prompt, intended, cid) for cid, prompt, intended, k in entries
+                    if not use_cache or k not in cache}.values())  # one request per distinct prompt
+        asked, before, fresh = {k for k, *_ in ask}, dict(cache), {}
+        answers = backend.ask_many(ask, attempts=attempts, backoff=backoff, max_calls=max_calls, log=log)
+        for k, fixed, resumed in answers:
+            if not resumed or (not use_cache and k in asked):  # a resumed recheck's own answers are fresh
+                fresh[k] = fixed
+            if use_cache or resumed:  # an earlier run's paid answers are always kept
+                if k not in cache:
+                    with path.open("a", encoding="utf-8") as fh:
+                        fh.write(json.dumps({"key": k, "fixed": fixed}, ensure_ascii=False) + "\n")
+                cache[k] = fixed
     stopped = getattr(backend, "stopped", False)
     per_clip, failed = list(no_output.values()), 0
     for cid, prompt, intended, k in entries:
