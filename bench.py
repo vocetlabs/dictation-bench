@@ -222,12 +222,14 @@ def judge_cmd(run_dir: pathlib.Path, via: str = "openrouter", out_name: str | No
     try:
         out = jd.judge_run(run_dir, HERE / "clips" / "manifest.csv", backend=backend, use_cache=use_cache,
                            limit=limit)
-    except sc.Incomplete as e:
+    except (sc.Incomplete, jd.JudgeError) as e:
         print(f"judge metrics: not computed ({e})", file=sys.stderr)
         return 1
     name = out_name or ("judge-recheck.json" if not use_cache else JUDGE_FILES[via])
     (run_dir / name).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
-    return 0 if "zer" in out or "recheck" in out else 1
+    if "recheck" in out:  # a recheck that got no fresh verdict proves nothing
+        return 0 if out["recheck"]["fresh"] else 1
+    return 0 if "zer" in out else 1
 
 
 def with_judge(score_json: pathlib.Path) -> dict:
@@ -242,6 +244,13 @@ def with_judge(score_json: pathlib.Path) -> dict:
                 s.update(zer=j["zer"], amend=j["amend"], judge_model=j["judge"]["model"])
                 break
     return s
+
+
+def positive_int(v: str) -> int:
+    n = int(v)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return n
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -274,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     j.add_argument("--out", help="output file name in the run folder (default: per --via)")
     j.add_argument("--no-cache", action="store_true", help="re-ask without reading or writing the cache; "
                    "reports how many verdicts match the cached ones (use with --limit)")
-    j.add_argument("--limit", type=int, help="only the first N clips with text (no headline)")
+    j.add_argument("--limit", type=positive_int, help="only the first N clips with text (no headline)")
     v = sub.add_parser("verify")
     v.add_argument("score_json", type=pathlib.Path)
     t = sub.add_parser("table")

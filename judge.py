@@ -43,7 +43,12 @@ HERE = pathlib.Path(__file__).resolve().parent
 
 
 class JudgeError(Exception):
-    """A failed judge request, described without the provider's response body (it can echo the prompt)."""
+    """A failed judge request, described without the provider's response body (it can echo the prompt).
+    `status` is the HTTP status when there was one."""
+
+    def __init__(self, msg: str, status: int | None = None) -> None:
+        super().__init__(msg)
+        self.status = status
 
 
 class UsageLimit(JudgeError):
@@ -66,7 +71,7 @@ def http_post(url: str, headers: dict, body: dict, timeout: float = 180) -> dict
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        raise JudgeError(f"HTTP {e.code}") from None
+        raise JudgeError(f"HTTP {e.code}", e.code) from None
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise JudgeError(f"network error ({type(e).__name__})") from None
     except json.JSONDecodeError:
@@ -79,7 +84,7 @@ def http_get(url: str, headers: dict, timeout: float = 120) -> dict:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        raise JudgeError(f"HTTP {e.code}") from None
+        raise JudgeError(f"HTTP {e.code}", e.code) from None
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise JudgeError(f"network error ({type(e).__name__})") from None
     except json.JSONDecodeError:
@@ -152,10 +157,19 @@ class OpenRouterJudge(OneAtATime):
 
 class OpenRouterBatchJudge:
     """The default: JUDGE_MODEL's `:batch` variant through OpenRouter's Batch API. Every prompt the cache can't
-    answer goes into one batch (the base slug; the API resolves the `:batch` entry), polled once a minute until
-    it is final, and its answers fill the cache. The batch's id is kept beside the cache until it is final,
-    so an interrupted run polls the same batch instead of paying for a second one. The cache key is the base
-    model's, so verdicts from the synchronous API are reused."""
+    answer goes into one batch (the base slug; the API resolves the `:batch` entry; one request per distinct
+    prompt), polled once a minute until it is final, and its answers fill the cache.
+
+    The batch's id is kept per run, in `<run>/.judge-batch-pending.json` with the hash of its prompt set and
+    the endpoint, from the moment it is accepted until its answers are in the cache, so an interrupted run
+    polls the same batch instead of paying for a second one. A lock file in the run keeps two judges from
+    submitting at once. A batch the API no longer knows (HTTP 404/410: expired or deleted) is dropped and
+    submitted again. Known gap: if the submit is accepted but its reply never arrives, the id is lost and a
+    rerun pays again for that batch; the bench doesn't list batches to recover it. The cache key is the
+    base model's, so verdicts from the synchronous API are reused."""
+
+    PENDING = ".judge-batch-pending.json"
+    LOCK = ".judge-batch.lock"
 
     def __init__(self, key: str, post=http_post, get=http_get, sleep=time.sleep, cache_dir=None,
                  poll_s: float = BATCH_POLL_S, wait_s: float = BATCH_WAIT_S) -> None:
@@ -164,30 +178,37 @@ class OpenRouterBatchJudge:
         self.cache_id = JUDGE_MODEL
         self.meta = {"model": f"{JUDGE_MODEL}:batch", "api": f"{BATCH_URL.split('/')[2]} batch",
                      "reasoning_effort": REASONING_EFFORT}
-        self.pending = pathlib.Path(cache_dir or HERE / ".judge-cache") / "pending-batch.json"
+        self.state_dir: pathlib.Path | None = None  # judge_run sets it to the run folder
         self.stopped = False
 
     def headers(self) -> dict:
         return {"Authorization": f"Bearer {self.key}", "Content-Type": "application/json"}
 
-    def submit(self, items) -> str:
+    @staticmethod
+    def prompt_set(keys) -> str:
+        return hashlib.sha256("\n".join(sorted(keys)).encode()).hexdigest()[:16]
+
+    def submit(self, items, pending: pathlib.Path) -> str:
         body = {"endpoint": "/v1/chat/completions", "model": JUDGE_MODEL, "completion_window": "24h",
                 "requests": [{"custom_id": k, "body": request_body(prompt)} for k, prompt, _, _ in items]}
         reply = self.post(BATCH_URL, self.headers(), body)  # the API wants `requests` last
         if not reply.get("id"):
             raise JudgeError("the batch was not accepted")
-        self.pending.parent.mkdir(parents=True, exist_ok=True)
-        self.pending.write_text(json.dumps({"id": reply["id"], "keys": [k for k, *_ in items]}))
+        pending.write_text(json.dumps({"id": reply["id"], "endpoint": BATCH_URL,
+                                       "prompt_set": self.prompt_set(k for k, *_ in items)}))
         return reply["id"]
 
     def wait(self, batch_id: str, log) -> dict | None:
-        """The finished batch, or None if it didn't finish within wait_s (it stays pending for a rerun)."""
+        """The finished batch; None if it didn't finish within wait_s (it stays pending for a rerun);
+        {"status": "gone"} if the API no longer knows it."""
         waited, interval = 0.0, self.poll_s
         while True:
             try:
                 b = self.get(f"{BATCH_URL}/{batch_id}", self.headers())
                 interval = self.poll_s
             except JudgeError as e:
+                if e.status in (404, 410):
+                    return {"status": "gone"}
                 log(f"judge: polling {batch_id}: {e}")
                 b, interval = {}, 2 * self.poll_s
             status = b.get("status")
@@ -202,25 +223,48 @@ class OpenRouterBatchJudge:
             waited += interval
 
     def ask_many(self, items, *, attempts=3, backoff=5.0, log=print):
-        items = list(items)
+        state = self.state_dir or HERE / ".judge-cache"
+        state.mkdir(parents=True, exist_ok=True)
+        pending, lock = state / self.PENDING, state / self.LOCK
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            raise JudgeError(f"another judge holds {lock} (delete it if no judge is running)") from None
+        os.close(fd)
+        try:
+            yield from self._ask_many(list(items), pending, attempts, log)
+        finally:
+            lock.unlink(missing_ok=True)
+
+    def _ask_many(self, items, pending, attempts, log):
+        self.stopped = False
         wanted = {k for k, *_ in items}
         rounds = 0
-        while True:
-            if self.pending.exists():
-                batch_id = json.loads(self.pending.read_text())["id"]
+        while wanted:
+            todo = [i for i in items if i[0] in wanted]
+            if pending.exists():
+                rec = json.loads(pending.read_text())
+                if rec.get("endpoint") != BATCH_URL or rec.get("prompt_set") != self.prompt_set(wanted):
+                    log(f"judge: a different batch ({rec.get('id')}) is pending for this run: rerun the command "
+                        f"that submitted it to collect it, or delete {pending}")
+                    self.stopped = True
+                    return
+                batch_id = rec["id"]
                 log(f"judge: resuming batch {batch_id}")
             else:
-                todo = [i for i in items if i[0] in wanted]
-                if not todo or rounds >= attempts:
+                if rounds >= attempts:
                     return
                 rounds += 1
-                batch_id = self.submit(todo)
+                batch_id = self.submit(todo, pending)
                 log(f"judge: batch {batch_id} submitted with {len(todo)} requests")
             b = self.wait(batch_id, log)
             if b is None:
                 self.stopped = True
                 return
-            self.pending.unlink(missing_ok=True)
+            if b.get("status") == "gone":
+                log(f"judge: batch {batch_id} is unknown or expired (HTTP 404/410): dropping it and resubmitting")
+                pending.unlink(missing_ok=True)
+                continue
             if b.get("status") != "completed":
                 log(f"judge: batch {batch_id} ended {b.get('status')}")
             failed = 0
@@ -237,22 +281,22 @@ class OpenRouterBatchJudge:
                     failed += 1
                     continue
                 wanted.discard(k)
-                yield k, fixed
-            if failed:
-                log(f"judge: {failed} requests in batch {batch_id} failed; resubmitting them")
-            if not wanted:
-                return
+                yield k, fixed  # the caller writes it to the cache before asking for the next one
+            pending.unlink(missing_ok=True)  # only now: every answer of this batch has been handed over
+            if wanted:
+                log(f"judge: {len(wanted)} requests in batch {batch_id} got no answer; resubmitting them")
 
 
 CLAUDE_MODEL = os.environ.get("BENCH_CLAUDE_MODEL", "claude-opus-5-5")
 USAGE_CLAUDE = re.compile(r"usage limit|rate limit|quota|too many requests|\b429\b", re.I)
-# Kept out of the CLI's environment, so it answers on the logged-in subscription, never an API key or another
-# provider (and agent tooling that reports status when ORCA_* is set doesn't see the call).
-CHILD_ENV_DROP = re.compile(r"^(ANTHROPIC_|OPENROUTER|JUDGE_API_KEY$|CLAUDE_CODE_USE_|ORCA_|AWS_|GOOGLE_)")
+# The only variables the CLI gets: enough to find its login (HOME, and CLAUDE_CONFIG_DIR if the user moved
+# it) and run. Everything else stays out: API keys of any provider (it answers on the logged-in
+# subscription), telemetry (OTEL_*, which can log prompts), proxies, agent tooling.
+CHILD_ENV_KEEP = re.compile(r"^(PATH|HOME|USER|LOGNAME|TMPDIR|LANG|LC_[A-Z_]+|TERM|CLAUDE_CONFIG_DIR)$")
 
 
 def child_env(env: dict | None = None) -> dict:
-    return {k: v for k, v in (os.environ if env is None else env).items() if not CHILD_ENV_DROP.match(k)}
+    return {k: v for k, v in (os.environ if env is None else env).items() if CHILD_ENV_KEEP.match(k)}
 
 
 class ClaudeCliJudge(OneAtATime):
@@ -290,7 +334,7 @@ class ClaudeCliJudge(OneAtATime):
         if p.returncode != 0 or not d:
             raise JudgeError(f"claude -p exited {p.returncode}")  # its text can echo the prompt: not shown
         if d.get("is_error") or d.get("subtype") != "success":
-            raise JudgeError(f"claude -p error ({d.get('subtype')})")
+            raise JudgeError("claude -p returned an error")
         if self.model not in (d.get("modelUsage") or {}):
             raise JudgeError("the answer came from another model")
         out = d.get("structured_output")
@@ -318,6 +362,10 @@ def judge_run(run_dir: pathlib.Path, manifest: pathlib.Path, key: str = "", *, b
     to resume (the cache answers what was already judged). use_cache=False with a limit re-asks the first
     `limit` clips with text, leaves the cache as it is, and reports how many fresh verdicts match it."""
     backend = backend or OpenRouterJudge(key, post)
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be at least 1")
+    if hasattr(backend, "state_dir"):
+        backend.state_dir = run_dir  # the batch judge keeps its pending batch and lock in the run
     sc.score_run(run_dir, manifest)  # raises sc.Incomplete for an incomplete or mismatched run
     build_prompt, char_edits, fingerprint, amend_version = tools or amend_tools()
     run = json.loads((run_dir / "run.json").read_text())
@@ -345,7 +393,8 @@ def judge_run(run_dir: pathlib.Path, manifest: pathlib.Path, key: str = "", *, b
     if limit:
         entries = entries[:limit]
         no_output = {}
-    ask = [(k, prompt, intended, cid) for cid, prompt, intended, k in entries if not use_cache or k not in cache]
+    ask = list({k: (k, prompt, intended, cid) for cid, prompt, intended, k in entries
+                if not use_cache or k not in cache}.values())  # one request per distinct prompt
     fresh = {}
     for k, fixed in backend.ask_many(ask[:max_calls], attempts=attempts, backoff=backoff, log=log):
         fresh[k] = fixed
@@ -378,7 +427,8 @@ def judge_run(run_dir: pathlib.Path, manifest: pathlib.Path, key: str = "", *, b
             e_new, e_old = char_edits(draft, fresh[k])[0], char_edits(draft, cache[k])[0]
             same_zero += (e_new == 0) == (e_old == 0)
             same_edits += e_new == e_old
-        out["recheck"] = {"compared": len(both), "same_zero_edit_verdict": same_zero, "same_edit_count": same_edits}
+        out["recheck"] = {"fresh": len(fresh), "compared": len(both), "same_zero_edit_verdict": same_zero,
+                          "same_edit_count": same_edits}
         log(f"judge recheck: {len(both)} compared, {same_zero} same zero-edit verdict, {same_edits} same edit count")
         return out
     if failed or limit:

@@ -144,19 +144,17 @@ class BenchJudgeTests(unittest.TestCase):
 
 FAKE_CLAUDE = """#!{python}
 import json, os, sys
-state = os.environ["FAKE_CLAUDE_STATE"]
+conf = json.load(open({conf!r}))  # the test's settings: the CLI gets no environment of ours to carry them
+state = conf["state"]
 calls = int(open(state).read()) if os.path.exists(state) else 0
 open(state, "w").write(str(calls + 1))
 prompt = sys.stdin.read()
-log = os.environ.get("FAKE_CLAUDE_LOG")
-if log:
-    with open(log, "a") as fh:
-        fh.write(json.dumps({{"argv": sys.argv[1:], "cwd_files": os.listdir("."), "env": sorted(os.environ)}}) + "\\n")
-limit_at = int(os.environ.get("FAKE_CLAUDE_LIMIT_AT", "-1"))
-if calls == limit_at:
+with open(conf["log"], "a") as fh:
+    fh.write(json.dumps({{"argv": sys.argv[1:], "cwd_files": os.listdir("."), "env": sorted(os.environ)}}) + "\\n")
+if calls == conf.get("limit_at", -1):
     print("Claude AI usage limit reached", file=sys.stderr)
     sys.exit(1)
-model = os.environ.get("FAKE_CLAUDE_MODEL", "claude-opus-5-5")
+model = conf.get("model", "claude-opus-5-5")
 intended = prompt.split("|")[1]
 print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "result": "",
                   "structured_output": {{"fixed": intended}}, "modelUsage": {{model: {{"outputTokens": 9}}}}}}))
@@ -168,19 +166,20 @@ class ClaudeCliTests(unittest.TestCase):
 
     def setUp(self):
         JudgeTests.setUp(self)
-        self.bin = self.d / "claude"
-        self.bin.write_text(FAKE_CLAUDE.format(python=sys.executable))
+        self.bin, self.conf = self.d / "claude", self.d / "fake.json"
+        self.bin.write_text(FAKE_CLAUDE.format(python=sys.executable, conf=str(self.conf)))
         self.bin.chmod(0o755)
         self.state, self.log = self.d / "calls", self.d / "argv.jsonl"
-        self.env = {"FAKE_CLAUDE_STATE": str(self.state), "FAKE_CLAUDE_LOG": str(self.log),
-                    "ANTHROPIC_API_KEY": "not-a-key", "OPENROUTER_API_KEY": "not-a-key",
-                    "JUDGE_API_KEY": "not-a-key", "ORCA_X": "1"}
+        self.env = {"ANTHROPIC_API_KEY": "not-a-key", "OPENROUTER_API_KEY": "not-a-key", "JUDGE_API_KEY": "not-a-key",
+                    "OPENAI_API_KEY": "not-a-key", "OTEL_LOG_USER_PROMPTS": "1", "HTTPS_PROXY": "http://x",
+                    "ORCA_X": "1"}
 
     def tearDown(self):
         self.dir.cleanup()
 
-    def judge(self, **env):
-        with mock.patch.dict(os.environ, {**self.env, **env}):
+    def judge(self, **conf):
+        self.conf.write_text(json.dumps({"state": str(self.state), "log": str(self.log), **conf}))
+        with mock.patch.dict(os.environ, self.env):
             return jd.judge_run(self.run, self.man, backend=jd.ClaudeCliJudge(binary=str(self.bin)),
                                 tools=fake_tools(), cache_dir=self.cache, backoff=0, log=lambda *_: None)
 
@@ -202,11 +201,12 @@ class ClaudeCliTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--tools") + 1], "")
         self.assertIn("-p", argv)
         self.assertEqual(calls[0]["cwd_files"], [])
-        for k in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "JUDGE_API_KEY", "ORCA_X"):
+        for k in self.env:  # keys of any provider, telemetry that can log prompts, proxies, agent tooling
             self.assertNotIn(k, calls[0]["env"])
+        self.assertIn("HOME", calls[0]["env"])
 
     def test_a_usage_limit_stops_and_a_rerun_resumes_from_the_cache(self):
-        out = self.judge(FAKE_CLAUDE_LIMIT_AT="1")  # the second call hits the limit
+        out = self.judge(limit_at=1)  # the second call hits the limit
         self.assertIn("stopped", out["incomplete"])
         self.assertEqual(out["judged"], 2)  # c1 judged, c3 (no output) needs no call
         self.assertEqual(int(self.state.read_text()), 2)  # stopped at once: no retries after the limit
@@ -216,7 +216,7 @@ class ClaudeCliTests(unittest.TestCase):
         self.assertEqual(int(self.state.read_text()), 1)  # only c2 was asked again
 
     def test_an_answer_from_another_model_is_refused(self):
-        self.assertIn("incomplete", self.judge(FAKE_CLAUDE_MODEL="claude-sonnet-5-5"))
+        self.assertIn("incomplete", self.judge(model="claude-sonnet-5-5"))
 
     def test_the_cache_is_separate_from_the_api_judges(self):
         self.judge()
@@ -281,7 +281,8 @@ class BatchTests(unittest.TestCase):
         self.assertEqual((out["zer"], len(api.submits), len(api.submits[0]["requests"])), (33.3, 1, 2))
         self.assertEqual(out["judge"]["model"], "anthropic/claude-opus-5.5:batch")
         self.assertNotIn("Bob", json.dumps(out))
-        self.assertFalse((self.cache / "pending-batch.json").exists())
+        self.assertFalse((self.run / ".judge-batch-pending.json").exists())
+        self.assertFalse((self.run / ".judge-batch.lock").exists())
 
     def test_verdicts_cached_by_the_synchronous_judge_are_reused(self):
         JudgeTests.judge(self, Endpoint())
@@ -293,7 +294,7 @@ class BatchTests(unittest.TestCase):
         api = FakeBatchApi(polls_before_done=10)
         out = self.judge(self.backend(api, wait_s=120))
         self.assertIn("stopped", out["incomplete"])
-        self.assertTrue((self.cache / "pending-batch.json").exists())
+        self.assertTrue((self.run / ".judge-batch-pending.json").exists())
         out = self.judge(self.backend(api))
         self.assertEqual((out["zer"], len(api.submits)), (33.3, 1))
 
@@ -317,9 +318,104 @@ class BatchTests(unittest.TestCase):
         api = FakeBatchApi()
         out = self.judge(self.backend(api), use_cache=False, limit=2)
         self.assertEqual(len(api.submits[0]["requests"]), 2)
-        self.assertEqual(out["recheck"], {"compared": 2, "same_zero_edit_verdict": 2, "same_edit_count": 2})
+        self.assertEqual(out["recheck"], {"fresh": 2, "compared": 2, "same_zero_edit_verdict": 2, "same_edit_count": 2})
         self.assertNotIn("zer", out)
         self.assertEqual(jd.cache_path(self.cache).read_text(), before)
+
+
+class BatchStateTests(unittest.TestCase):
+    """The batch judge's per-run pending record, lock, expired batches and duplicate prompts."""
+
+    def setUp(self):
+        JudgeTests.setUp(self)
+        self.logs = []
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def judge(self, api, **kw):
+        b = jd.OpenRouterBatchJudge("k", post=api.post, get=api.get, sleep=lambda s: None, cache_dir=self.cache)
+        return jd.judge_run(self.run, self.man, backend=b, tools=fake_tools(), cache_dir=self.cache, backoff=0,
+                            log=self.logs.append, **kw)
+
+    def test_an_expired_or_unknown_batch_is_dropped_and_resubmitted(self):
+        first = FakeBatchApi()
+        self.judge(first)  # learn this run's request keys, then forget the answers
+        keys = [r["custom_id"] for r in first.submits[0]["requests"]]
+        for f in self.cache.glob("*.jsonl"):
+            f.unlink()
+        (self.run / ".judge-batch-pending.json").write_text(json.dumps(
+            {"id": "batch_old", "endpoint": jd.BATCH_URL, "prompt_set": jd.OpenRouterBatchJudge.prompt_set(keys)}))
+        api = FakeBatchApi()
+        get = api.get
+
+        def gone_then_ok(url, headers):
+            if url.endswith("batch_old"):
+                raise jd.JudgeError("HTTP 410", 410)
+            return get(url, headers)
+        api.get = gone_then_ok
+        out = self.judge(api)
+        self.assertEqual((out["zer"], len(api.submits)), (33.3, 1))
+        self.assertTrue(any("404/410" in x for x in self.logs))
+
+    def test_a_different_pending_batch_is_left_alone(self):
+        rec = {"id": "batch_other", "endpoint": jd.BATCH_URL, "prompt_set": "0" * 16}
+        (self.run / ".judge-batch-pending.json").write_text(json.dumps(rec))
+        api = FakeBatchApi()
+        out = self.judge(api)
+        self.assertIn("stopped", out["incomplete"])
+        self.assertEqual((len(api.submits), api.polls), (0, 0))
+        self.assertEqual(json.loads((self.run / ".judge-batch-pending.json").read_text()), rec)
+
+    def test_a_second_judge_on_the_same_run_is_refused(self):
+        (self.run / ".judge-batch.lock").write_text("")
+        with self.assertRaisesRegex(jd.JudgeError, "another judge"):
+            self.judge(FakeBatchApi())
+
+    def test_the_pending_record_is_written_before_polling_and_kept_until_answers_are_cached(self):
+        seen = {}
+        api = FakeBatchApi()
+        get = api.get
+
+        def watch(url, headers):
+            seen["pending_while_polling"] = (self.run / ".judge-batch-pending.json").exists()
+            return get(url, headers)
+        api.get = watch
+        self.judge(api)
+        self.assertTrue(seen["pending_while_polling"])
+        self.assertFalse((self.run / ".judge-batch-pending.json").exists())
+
+    def test_identical_prompts_go_once_and_score_every_clip(self):
+        man = MAN + [{"clip_id": "c4", "spoken_text": "hello bob", "intended_text": "Hello Bob."}]
+        with self.man.open("w", newline="") as fh:
+            w = csv.DictWriter(fh, list(MAN[0]))
+            w.writeheader()
+            w.writerows(man)
+        rows = sc.read_csv(self.run / "results.csv") + [{**{f: "" for f in hn.FIELDS}, "clip_id": "c4", "status": "ok",
+                                                         "transcript": "Hello Bob."}]
+        hn.write_rows(self.run / "results.csv", {r["clip_id"]: r for r in rows})
+        (self.run / "run.json").write_text(json.dumps({"fingerprint": "fp", "clip_ids": ["c1", "c2", "c3", "c4"],
+                                                       "timed": False, "manifest_sha256": sc.digest(self.man)}))
+        api = FakeBatchApi()
+        out = self.judge(api)
+        ids = [r["custom_id"] for r in api.submits[0]["requests"]]
+        self.assertEqual((len(ids), len(set(ids))), (2, 2))  # c1 and c4 share one request
+        self.assertEqual((out["judged"], out["zer"]), (4, 50.0))
+
+    def test_limits_must_be_positive(self):
+        with self.assertRaises(ValueError):
+            self.judge(FakeBatchApi(), limit=0)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            bench.main(["judge", "out/x", "--no-cache", "--limit", "0"])
+
+    def test_a_recheck_without_a_fresh_verdict_fails(self):
+        none = {"recheck": {"fresh": 0, "compared": 0, "same_zero_edit_verdict": 0, "same_edit_count": 0}}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(jd, "judge_run", return_value=none), \
+                mock.patch.dict(os.environ, {"JUDGE_API_KEY": "k"}):
+            self.assertEqual(bench.judge_cmd(pathlib.Path(d), use_cache=False, limit=10), 1)
+            some = {"recheck": dict(none["recheck"], fresh=10, compared=10)}
+            with mock.patch.object(jd, "judge_run", return_value=some):
+                self.assertEqual(bench.judge_cmd(pathlib.Path(d), use_cache=False, limit=10), 0)
 
 
 if __name__ == "__main__":
