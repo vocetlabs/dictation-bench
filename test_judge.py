@@ -2,6 +2,7 @@
 calls for clips with no output; errors without the provider's text; the cache. No network or key."""
 import contextlib
 import csv
+import fcntl
 import io
 import json
 import os
@@ -282,7 +283,7 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(out["judge"]["model"], "anthropic/claude-opus-5.5:batch")
         self.assertNotIn("Bob", json.dumps(out))
         self.assertFalse((self.run / ".judge-batch-pending.json").exists())
-        self.assertFalse((self.run / ".judge-batch.lock").exists())
+        self.assertTrue(BatchStateTests.lock_is_free(self.run))
 
     def test_verdicts_cached_by_the_synchronous_judge_are_reused(self):
         JudgeTests.judge(self, Endpoint())
@@ -322,6 +323,17 @@ class BatchTests(unittest.TestCase):
         self.assertNotIn("zer", out)
         self.assertEqual(jd.cache_path(self.cache).read_text(), before)
 
+    def test_a_resumed_recheck_counts_its_recovered_verdicts_as_fresh(self):
+        self.judge(self.backend(FakeBatchApi()))
+        before = jd.cache_path(self.cache).read_text()
+        api = FakeBatchApi(polls_before_done=10)
+        out = self.judge(self.backend(api, wait_s=120), use_cache=False, limit=2)  # interrupted
+        self.assertEqual(out["recheck"]["fresh"], 0)
+        out = self.judge(self.backend(api), use_cache=False, limit=2)  # resumed: the same batch, collected
+        self.assertEqual(len(api.submits), 1)
+        self.assertEqual(out["recheck"], {"fresh": 2, "compared": 2, "same_zero_edit_verdict": 2, "same_edit_count": 2})
+        self.assertEqual(jd.cache_path(self.cache).read_text(), before)
+
 
 class BatchStateTests(unittest.TestCase):
     """The batch judge's per-run pending record, lock, expired batches and duplicate prompts."""
@@ -359,14 +371,39 @@ class BatchStateTests(unittest.TestCase):
         self.assertEqual(len(api.submits), 1)  # then one batch for what was still missing
         self.assertFalse((self.run / ".judge-batch-pending.json").exists())
 
-    def test_a_dead_judges_lock_is_taken_over_and_a_live_ones_refuses(self):
-        (self.run / ".judge-batch.lock").write_text("99999999")  # no such process
-        out = self.judge(FakeBatchApi())
-        self.assertEqual(out["zer"], 33.3)
-        self.assertTrue(any("taking over" in x for x in self.logs))
-        (self.run / ".judge-batch.lock").write_text(str(os.getpid()))  # this process: alive
-        with self.assertRaisesRegex(jd.JudgeError, "another judge"):
-            self.judge(FakeBatchApi())
+    @staticmethod
+    def lock_is_free(run) -> bool:
+        fd = os.open(run / ".judge-batch.lock", os.O_CREAT | os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+        finally:
+            os.close(fd)
+
+    def test_a_held_lock_refuses_and_a_dead_judges_file_does_not_block(self):
+        lock = self.run / ".judge-batch.lock"
+        lock.write_text("99999999")  # left by a judge that died: its flock went with it
+        fd = os.open(lock, os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # held, as a running judge holds it
+        api = FakeBatchApi()
+        with self.assertRaisesRegex(jd.JudgeError, r"another judge \(PID 99999999\)"):
+            self.judge(api)
+        self.assertEqual(len(api.submits), 0)
+        os.close(fd)  # the holder exits
+        self.assertEqual(self.judge(api)["zer"], 33.3)
+        self.assertEqual(lock.read_text(), str(os.getpid()))
+        self.assertTrue(self.lock_is_free(self.run))
+
+    def test_the_call_cap_counts_what_is_missing_after_the_pending_batch(self):
+        api = FakeBatchApi(polls_before_done=10)
+        b = jd.OpenRouterBatchJudge("k", post=api.post, get=api.get, sleep=lambda s: None, wait_s=120)
+        jd.judge_run(self.run, self.man, backend=b, tools=fake_tools(), cache_dir=self.cache, max_calls=1,
+                     log=self.logs.append)  # stopped with one request pending
+        out = self.judge(api, max_calls=1)  # collects it, then one more request: the clip still missing
+        self.assertEqual([len(x["requests"]) for x in api.submits], [1, 1])
+        self.assertEqual((out["zer"], out["calls"]), (33.3, 1))
 
     def test_an_unreadable_pending_record_stops_the_run_and_is_kept(self):
         rec = self.run / ".judge-batch-pending.json"
@@ -375,7 +412,7 @@ class BatchStateTests(unittest.TestCase):
         with self.assertRaisesRegex(jd.JudgeError, "judge-batch-pending.json"):
             self.judge(api)
         self.assertEqual((rec.read_text(), len(api.submits)), ('{"id": "batch_', 0))
-        self.assertFalse((self.run / ".judge-batch.lock").exists())
+        self.assertTrue(BatchStateTests.lock_is_free(self.run))
 
     def test_the_pending_record_is_written_atomically(self):
         with mock.patch.object(jd.os, "replace", wraps=os.replace) as replace:

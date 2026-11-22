@@ -14,6 +14,7 @@ scorer version and the prompt's hash, so a rerun asks nothing new.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -123,9 +124,11 @@ def ask(prompt: str, key: str, post=http_post) -> str:
 class OneAtATime:
     """ask_many for judges that answer one prompt per call: in order, retried, stopped by a usage limit."""
 
-    def ask_many(self, items, *, attempts=3, backoff=5.0, log=print):
+    def ask_many(self, items, *, attempts=3, backoff=5.0, max_calls=None, log=print):
         answers, stopped = {}, False
         self.stopped = False
+        items = list(items)[:max_calls]
+        self.calls = len(items)
         for k, prompt, intended, label in items:
             for attempt in range(1, attempts + 1):
                 if stopped:
@@ -163,8 +166,9 @@ class OpenRouterBatchJudge:
     The batch's id is kept per run, in `<run>/.judge-batch-pending.json` (written atomically), from the
     moment it is accepted until its answers are in the cache. A run that finds one first collects that batch
     and caches every answer in it, whatever it asks for now, then submits a batch for what is still missing,
-    so paid answers are never thrown away. A lock file in the run (holding the judge's PID; a dead PID's lock
-    is taken over) keeps two judges from submitting at once. If the API no longer knows the pending batch
+    so paid answers are never thrown away; the cap on requests applies to what is still missing after that. An
+    exclusive flock on a lock file in the run (released by the OS when the judge exits, however it exits; the
+    file names the holder's PID) keeps two judges from submitting at once. If the API no longer knows the pending batch
     (HTTP 404/410: expired, deleted, or another key's), the run stops and keeps the record; `bench judge
     --drop-pending` removes it. Known gap: if the submit is accepted but its reply never arrives, the id is
     lost and a rerun pays again for that batch; the bench doesn't list batches to recover it. The cache key
@@ -207,27 +211,20 @@ class OpenRouterBatchJudge:
         tmp.write_text(json.dumps(rec))
         os.replace(tmp, pending)
 
-    def take_lock(self, lock: pathlib.Path, log) -> None:
-        for _ in range(2):
-            try:
-                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, str(os.getpid()).encode())
-                os.close(fd)
-                return
-            except FileExistsError:
-                try:
-                    pid = int(lock.read_text().strip())
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    log(f"judge: taking over {lock} from PID {pid}, which is no longer running")
-                    lock.unlink(missing_ok=True)
-                    continue
-                except (ValueError, OSError):
-                    log(f"judge: taking over {lock}, which names no running judge")
-                    lock.unlink(missing_ok=True)
-                    continue
-                raise JudgeError(f"another judge (PID {pid}) holds {lock}") from None
-        raise JudgeError(f"could not take {lock}")
+    @staticmethod
+    def take_lock(lock: pathlib.Path) -> int:
+        """An exclusive, non-blocking flock: atomic, and the OS drops it when its holder exits, so there is no
+        stale lock to take over. The file stays (removing a lock file races with the next judge opening it)."""
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            holder = os.read(fd, 32).decode(errors="replace").strip() or "?"
+            os.close(fd)
+            raise JudgeError(f"another judge (PID {holder}) holds {lock}") from None
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+        return fd
 
     def submit(self, items, pending: pathlib.Path) -> str:
         body = {"endpoint": "/v1/chat/completions", "model": JUDGE_MODEL, "completion_window": "24h",
@@ -263,20 +260,21 @@ class OpenRouterBatchJudge:
             self.sleep(interval)
             waited += interval
 
-    def ask_many(self, items, *, attempts=3, backoff=5.0, log=print):
+    def ask_many(self, items, *, attempts=3, backoff=5.0, max_calls=None, log=print):
         """Yields (key, answer, resumed): resumed answers come from a batch an earlier run paid for; the caller
-        caches them whatever it asked for."""
+        caches them whatever it asked for. max_calls caps the requests submitted, counted after the pending
+        batch is collected."""
         state = self.state_dir or HERE / ".judge-cache"
         state.mkdir(parents=True, exist_ok=True)
         pending, lock = state / self.PENDING, state / self.LOCK
-        self.take_lock(lock, log)
+        fd = self.take_lock(lock)
         try:
-            yield from self._ask_many(list(items), pending, attempts, log)
+            yield from self._ask_many(list(items), pending, attempts, max_calls, log)
         finally:
-            lock.unlink(missing_ok=True)
+            os.close(fd)  # releases the flock
 
-    def _ask_many(self, items, pending, attempts, log):
-        self.stopped = False
+    def _ask_many(self, items, pending, attempts, max_calls, log):
+        self.stopped, self.calls = False, 0
         wanted = {k for k, *_ in items}
         rounds = 0
         while True:
@@ -288,6 +286,10 @@ class OpenRouterBatchJudge:
                 todo = [i for i in items if i[0] in wanted]
                 if not todo or rounds >= attempts:
                     return
+                if not rounds:  # the cap, on what is still missing once any pending batch is collected
+                    todo = todo[:max_calls]
+                    wanted = {k for k, *_ in todo}
+                    self.calls = len(todo)
                 rounds += 1
                 batch_id = self.submit(todo, pending)
                 log(f"judge: batch {batch_id} submitted with {len(todo)} requests")
@@ -440,9 +442,9 @@ def judge_run(run_dir: pathlib.Path, manifest: pathlib.Path, key: str = "", *, b
         no_output = {}
     ask = list({k: (k, prompt, intended, cid) for cid, prompt, intended, k in entries
                 if not use_cache or k not in cache}.values())  # one request per distinct prompt
-    fresh = {}
-    for k, fixed, resumed in backend.ask_many(ask[:max_calls], attempts=attempts, backoff=backoff, log=log):
-        if not resumed:
+    asked, before, fresh = {k for k, *_ in ask}, dict(cache), {}
+    for k, fixed, resumed in backend.ask_many(ask, attempts=attempts, backoff=backoff, max_calls=max_calls, log=log):
+        if not resumed or (not use_cache and k in asked):  # a resumed recheck's own answers are fresh
             fresh[k] = fixed
         if use_cache or resumed:  # an earlier run's paid answers are always kept
             if k not in cache:
@@ -465,13 +467,13 @@ def judge_run(run_dir: pathlib.Path, manifest: pathlib.Path, key: str = "", *, b
     out = {"judge": {**backend.meta, "prompt_version": PROMPT_VERSION, "prompt_fingerprint": fingerprint,
                      "amend_va": amend_version, "version": JUDGE_VERSION},
            "fingerprint": run["fingerprint"], "results_sha256": sc.digest(run_dir / "results.csv"),
-           "clips": len(per_clip), "judged": len(judged), "calls": len(ask[:max_calls]), "per_clip": per_clip}
+           "clips": len(per_clip), "judged": len(judged), "calls": getattr(backend, "calls", 0), "per_clip": per_clip}
     if not use_cache:  # a recheck: fresh verdicts against the cached ones, numbers only
-        both = [(cid, k) for cid, _, _, k in entries if k in fresh and k in cache]
+        both = [(cid, k) for cid, _, _, k in entries if k in fresh and k in before]  # the cache as it was
         same_zero = same_edits = 0
         for cid, k in both:
             draft = rows[cid]["transcript"]
-            e_new, e_old = char_edits(draft, fresh[k])[0], char_edits(draft, cache[k])[0]
+            e_new, e_old = char_edits(draft, fresh[k])[0], char_edits(draft, before[k])[0]
             same_zero += (e_new == 0) == (e_old == 0)
             same_edits += e_new == e_old
         out["recheck"] = {"fresh": len(fresh), "compared": len(both), "same_zero_edit_verdict": same_zero,

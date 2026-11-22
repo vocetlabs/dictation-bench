@@ -48,7 +48,8 @@ which records the `:batch` variant); the judge's corrections stay in the local, 
 keyed by model, prompt version and scorer version, and a batch still pending is resumed by the next run
 instead of submitted again: its id is kept in the run folder (`.judge-batch-pending.json`) until its answers
 are cached, and a run that finds one collects and caches all of that batch's answers before submitting
-anything new. A lock file stops two judges submitting for one run (a dead judge's lock is taken over). If the
+anything new. An exclusive lock (`flock` on `.judge-batch.lock`, which the OS releases when a judge exits) stops two
+judges submitting for one run. If the
 API no longer knows the pending batch (HTTP 404/410: expired, deleted, or another key's), the run stops and
 keeps the record; `./bench judge out/<run> --drop-pending` removes it. If the reply to a submit itself is
 lost, a rerun pays for that batch again. No headline is given unless every clip has a judgement. Compare
