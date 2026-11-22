@@ -15,6 +15,8 @@
     ./bench run --app handy --full         # the smoke gate, then all 151 clips, then score
     ./bench score out/handy                # WER from a finished run (refuses incomplete runs)
     ./bench judge out/handy                # optional ZER/AMEND (needs JUDGE_API_KEY; skipped without)
+    ./bench judge out/handy --via claude-cli   # the same judge prompt through a logged-in `claude -p`
+    ./bench judge out/handy --no-cache --limit 10   # re-ask 10 clips; how many verdicts match the cache
     ./bench verify out/handy/score.json    # recompute the headline from the per-clip numbers
     ./bench table out/*/score.json         # accuracy and speed tables
     ./bench dry-run                        # the loop against a simulated app (no macOS)
@@ -199,30 +201,58 @@ def score_cmd(run_dir: pathlib.Path, manifest: pathlib.Path | None = None) -> in
     return 0
 
 
-def judge_cmd(run_dir: pathlib.Path) -> int:
-    key = os.environ.get("JUDGE_API_KEY", "")
-    if not key:
-        print("judge metrics: not computed (no key)")
-        return 0
+JUDGE_FILES = {"openrouter": "judge.json", "openrouter-sync": "judge.json", "claude-cli": "judge-claude-cli.json"}
+
+
+def judge_cmd(run_dir: pathlib.Path, via: str = "openrouter", out_name: str | None = None, use_cache: bool = True,
+              limit: int | None = None, drop_pending: bool = False) -> int:
+    """ZER/AMEND for a finished run. openrouter (default): Claude Opus 5.5's batch variant through OpenRouter's
+    Batch API; openrouter-sync: the same model through its synchronous API (both need JUDGE_API_KEY);
+    claude-cli: the logged-in Claude Code CLI (`claude -p`, the subscription), no key. --no-cache --limit N
+    re-asks N clips and reports how many verdicts match the cache (judge-recheck.json)."""
     import judge as jd
+    if drop_pending and not jd.drop_pending(run_dir):
+        print(f"no pending batch record in {run_dir}")
+    if via == "claude-cli":
+        backend = jd.ClaudeCliJudge()
+    else:
+        key = os.environ.get("JUDGE_API_KEY", "")
+        if not key:
+            print("judge metrics: not computed (no key)")
+            return 0
+        backend = jd.OpenRouterBatchJudge(key) if via == "openrouter" else jd.OpenRouterJudge(key)
     try:
-        out = jd.judge_run(run_dir, HERE / "clips" / "manifest.csv", key)
-    except sc.Incomplete as e:
+        out = jd.judge_run(run_dir, HERE / "clips" / "manifest.csv", backend=backend, use_cache=use_cache,
+                           limit=limit)
+    except (sc.Incomplete, jd.JudgeError) as e:
         print(f"judge metrics: not computed ({e})", file=sys.stderr)
         return 1
-    (run_dir / "judge.json").write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
+    name = out_name or ("judge-recheck.json" if not use_cache else JUDGE_FILES[via])
+    (run_dir / name).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
+    if "recheck" in out:  # a recheck that got no fresh verdict proves nothing
+        return 0 if out["recheck"]["fresh"] else 1
     return 0 if "zer" in out else 1
 
 
 def with_judge(score_json: pathlib.Path) -> dict:
-    """score.json, plus ZER/AMEND from judge.json beside it when that judged the same results."""
+    """score.json, plus ZER/AMEND from a judge file beside it (judge.json, else judge-claude-cli.json) when
+    that judged the same results; judge_model says which judge and path scored it."""
     s = json.loads(score_json.read_text())
-    jp = score_json.with_name("judge.json")
-    if jp.exists():
-        j = json.loads(jp.read_text())
-        if j.get("results_sha256") == s.get("results_sha256") and "zer" in j:
-            s.update(zer=j["zer"], amend=j["amend"], judge_model=j["judge"]["model"])
+    for name in dict.fromkeys(JUDGE_FILES.values()):
+        jp = score_json.with_name(name)
+        if jp.exists():
+            j = json.loads(jp.read_text())
+            if j.get("results_sha256") == s.get("results_sha256") and "zer" in j:
+                s.update(zer=j["zer"], amend=j["amend"], judge_model=j["judge"]["model"])
+                break
     return s
+
+
+def positive_int(v: str) -> int:
+    n = int(v)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return n
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -249,6 +279,15 @@ def main(argv: list[str] | None = None) -> int:
     sc_.add_argument("run_dir", type=pathlib.Path)
     j = sub.add_parser("judge")
     j.add_argument("run_dir", type=pathlib.Path)
+    j.add_argument("--via", choices=sorted(JUDGE_FILES), default="openrouter",
+                   help="openrouter (batch, JUDGE_API_KEY), openrouter-sync (JUDGE_API_KEY) or claude-cli "
+                        "(a logged-in `claude`, no key)")
+    j.add_argument("--out", help="output file name in the run folder (default: per --via)")
+    j.add_argument("--no-cache", action="store_true", help="re-ask without reading or writing the cache; "
+                   "reports how many verdicts match the cached ones (use with --limit)")
+    j.add_argument("--limit", type=positive_int, help="only the first N clips with text (no headline)")
+    j.add_argument("--drop-pending", action="store_true", help="first remove the run's pending batch record "
+                   "(after a 404/410 or an unreadable record; its answers, if any, are given up)")
     v = sub.add_parser("verify")
     v.add_argument("score_json", type=pathlib.Path)
     t = sub.add_parser("table")
@@ -271,7 +310,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "score":
         return score_cmd(a.run_dir)
     if a.cmd == "judge":
-        return judge_cmd(a.run_dir)
+        return judge_cmd(a.run_dir, a.via, a.out, use_cache=not a.no_cache, limit=a.limit,
+                         drop_pending=a.drop_pending)
     if a.cmd == "verify":
         bad = sc.verify(json.loads(a.score_json.read_text()))
         print("consistent" if not bad else "\n".join(bad))

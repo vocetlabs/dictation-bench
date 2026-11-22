@@ -37,15 +37,31 @@ outcome; otherwise `score` refuses and says why.
 
 **Judge metrics (optional).** ZER (share of clips that need no edit) and AMEND (pooled character edits /
 characters), from [amend-va](https://pypi.org/project/amend-va/) 0.2.1's prompt `v1` and its `char_edits`,
-asked of one pinned judge, `anthropic/claude-opus-5.5` (reasoning effort high), through OpenRouter's
-OpenAI-compatible API. They are computed only when `JUDGE_API_KEY` is set (`./bench judge out/<run>`);
-otherwise the summary says "judge metrics: not computed (no key)". Sent to the judge, for each clip with
-text: the clip's intended text, its spoken text and the app's draft. Clips with no output are not sent and
-get no ZER credit. Only numbers are kept (`judge.json`); the judge's corrections stay in the local,
-git-ignored `.judge-cache/`, keyed by model, prompt version and scorer version. No headline is given unless
-every clip has a judgement. `BENCH_JUDGE_MODEL` and `BENCH_JUDGE_URL` change the judge; compare runs only
-under the same judge. In a repository of your own, add a `JUDGE_API_KEY` secret and pass it to the
-workflow's Judge step (`env: JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}`).
+asked of one pinned judge, Claude Opus 5.5 (reasoning effort high), through
+[OpenRouter's Batch API](https://openrouter.ai/docs/guides/features/batch-api): the model's `:batch`
+variant, the same model at about half the price. All prompts of a run go into one batch, polled once a
+minute; most batches finish within minutes, the API allows up to 24 hours. The judge runs only when
+`JUDGE_API_KEY` is set (`./bench judge out/<run>`); otherwise the summary says "judge metrics: not computed
+(no key)". Sent to the judge, for each clip with text: the clip's intended text, its spoken text and the
+app's draft. Clips with no output are not sent and get no ZER credit. Only numbers are kept (`judge.json`,
+which records the `:batch` variant); the judge's corrections stay in the local, git-ignored `.judge-cache/`,
+keyed by model, prompt version and scorer version, and a batch still pending is resumed by the next run
+instead of submitted again: its id is kept in the run folder (`.judge-batch-pending.json`) until its answers
+are cached, and a run that finds one collects and caches all of that batch's answers before submitting
+anything new. An exclusive lock (`flock` on `.judge-batch.lock`, which the OS releases when a judge exits) stops two
+judges submitting for one run. If the
+API no longer knows the pending batch (HTTP 404/410: expired, deleted, or another key's), the run stops and
+keeps the record; `./bench judge out/<run> --drop-pending` removes it. If the reply to a submit itself is
+lost, a rerun pays for that batch again. No headline is given unless every clip has a judgement. Compare
+runs only under the same judge. In a repository of your own, add a `JUDGE_API_KEY` secret and pass it to the workflow's
+Judge step (`env: JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}`).
+
+Other paths to the same judge: `--via openrouter-sync` (OpenRouter's synchronous API, full price; it shares
+the batch judge's cache), and `--via claude-cli`, which asks `claude-opus-5-5` through a logged-in
+[Claude Code](https://claude.com/claude-code) CLI (`claude -p`, effort high, tools off, from an empty
+folder, no API key in its environment, one call at a time) on a Claude subscription and writes
+`judge-claude-cli.json`; tables name the path that scored a run. `./bench judge out/<run> --no-cache --limit
+10` re-asks ten clips and reports how many verdicts match the cached ones, without touching the cache.
 
 **Speed** (quiet real Macs only, not CI): `e2t` = end of speech in the clip to the last change of the text
 (primary); `post_stop` = key release to the last change. p50 and p95 over `ok` clips, with the failure
