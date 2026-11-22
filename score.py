@@ -110,6 +110,7 @@ def score_run(run_dir: pathlib.Path, manifest: pathlib.Path) -> dict:
     out = {"scorer": SCORER_VERSION, "fingerprint": run["fingerprint"], "app": run.get("app", {}),
            "effective": run.get("effective", {}), "machine": run.get("machine", ""), "timed": run.get("timed"),
            "dataset": run.get("dataset", {}), "results_sha256": digest(run_dir / "results.csv"),
+           "app_log_counts": run.get("app_log_counts", {}),
            "clips": len(per_clip), "outcomes": counts, "per_clip": per_clip}
     out.update(totals(per_clip, bool(run.get("timed"))))
     return out
@@ -159,8 +160,9 @@ def table(scores: list[dict]) -> str:
     """Accuracy and speed rows kept apart: speed only from timed runs."""
     def row(s):
         a = s.get("app", {})
-        return {"app": a.get("name", ""), "version": a.get("version", ""), "model": a.get("model", {}).get("id", ""),
-                "cleanup": a.get("cleanup", ""), "machine": s.get("machine", ""), **s}
+        return {**s, "app": a.get("name", ""), "version": a.get("version", ""),
+                "model": a.get("model", {}).get("id", ""), "cleanup": a.get("cleanup", ""),
+                "machine": s.get("machine", "")}
 
     def md(rows, cols):
         cell = lambda v: "-" if v in (None, "") else (f"{v:.2f}" if isinstance(v, float) else str(v))  # noqa: E731

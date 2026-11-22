@@ -91,6 +91,23 @@ def smoke_ok(res: hn.Result) -> tuple[bool, str]:
     return ok, f"smoke: {res.status}, {right}/{len(want)} words right, e2t={res.e2t_s} {res.error}"
 
 
+def log_counts(app: hn.App) -> dict[str, int]:
+    """How often each value of the app's log_counts group appears in its log files so far: numbers only."""
+    import glob
+    import re
+    if not app.log_counts or not app.logs or app.logs.startswith("unified:"):
+        return {}
+    rx, counts = re.compile(app.log_counts), {}
+    for f in sorted(glob.glob(os.path.expanduser(app.logs))):
+        for m in rx.finditer(pathlib.Path(f).read_text(errors="replace")):
+            counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    return counts
+
+
+def count_diff(after: dict[str, int], before: dict[str, int]) -> dict[str, int]:
+    return {k: after[k] - before.get(k, 0) for k in sorted(after) if after[k] - before.get(k, 0)}
+
+
 def show_logs(app: hn.App, lines: int = 40) -> None:
     """The tail of the app's own log, after a failed smoke test only (its audio is our synthetic
     sentence, so nothing from the dataset can be in it)."""
@@ -154,8 +171,14 @@ def run(a: argparse.Namespace) -> int:
                 "dataset": DATASET, "manifest_sha256": sc.digest(manifest), "machine": a.machine or "local",
                 "macos": env["macos"], "clip_ids": [c.clip_id for c in clips]}
         info["fingerprint"] = hn.fingerprint(**info)
+        before = log_counts(app)
         rows = hn.run_all(clips, driver, target, hn.Clock(), timing, out, run=info,
                           restart_after_ambiguous=restart, attempts=a.attempts)
+        if app.log_counts:  # e.g. how many cleanups were applied or fell back, over this run's clips
+            meta = json.loads((out / "run.json").read_text())
+            meta["app_log_counts"] = count_diff(log_counts(app), before)
+            (out / "run.json").write_text(json.dumps(meta, indent=1, sort_keys=True) + "\n")
+            print(f"app log counts: {meta['app_log_counts']}")
     finally:
         driver.recover(restart=False)
         caff.terminate()

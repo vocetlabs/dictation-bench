@@ -134,6 +134,8 @@ class App:
     hosted_setup: bool = False                    # apps/<name>.sh can set it up with no person (CI)
     settings_files: list = field(default_factory=list)  # hashed into run.json: what the app ran with
     logs: str = ""                                # the app's log files (glob), shown when the smoke test fails
+    log_counts: str = ""                          # a regex with one group: its values in the app's log are
+                                                  #   counted over the run (numbers only, never the lines)
 
     def __post_init__(self) -> None:
         parse_hotkey(self.hotkey)

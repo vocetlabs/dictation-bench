@@ -19,6 +19,9 @@
   "cleanup": "on (Gemma 4 E2B, on device)",
   "notes": "Setup's 'On this Mac' choice; built from source (no signed release of this commit). Usage sharing off.",
   "hosted_setup": true,
-  "settings_files": ["~/Library/Application Support/com.dictationapp.desktop/settings.json"],
-  "logs": "~/Library/Logs/com.dictationapp.desktop/dictation-app.log*"
+  "settings_files": [
+    "~/Library/Application Support/com.dictationapp.desktop/settings.json"
+  ],
+  "logs": "~/Library/Logs/com.dictationapp.desktop/dictation-app.log*",
+  "log_counts": "cleanup outcome=\"([a-z_]+)\""
 }

@@ -20,7 +20,9 @@
   "cleanup": "off",
   "notes": "Onboarding asks for a shortcut: Right Option; recording mode left at its default (hybrid). Unattended setup reaches recording on a runner, but VoiceInk ends each recording at once (\"captured less than 150 ms\"); local only until that is understood.",
   "hosted_setup": false,
-  "settings_files": ["~/Library/Preferences/com.prakashjoshipax.VoiceInk.plist"],
+  "settings_files": [
+    "~/Library/Preferences/com.prakashjoshipax.VoiceInk.plist"
+  ],
   "logs": "unified:VoiceInk:com.prakashjoshipax",
   "hybrid": true
 }

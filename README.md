@@ -94,29 +94,29 @@ recommended local model. `apps/<app>.json` pins the release (URL, sha256, tag), 
 known about its settings; `apps/<app>.sh` applies them. Every run records the app's binary hash and the
 hash of its settings files in `run.json`.
 
-| App | Release | Key, mode | Local model |
-| --- | --- | --- | --- |
-| [Handy](https://github.com/cjpais/Handy) | 0.10.1 | Option+Space, hold-or-toggle (held here) | Parakeet Unified EN 0.6B, Q8_0 GGUF (731 MB) |
-| [Muesli](https://github.com/Muesli-HQ/muesli) | 0.8.6 | Right Option, hold | Parakeet Unified EN 0.6B, Core ML (~565 MB) |
-| [FluidVoice](https://github.com/altic-dev/FluidVoice) | 1.6.13 | Right Option, toggle | Parakeet TDT 0.6B, Core ML (~450 MB) |
-| [VoiceInk](https://github.com/Beingpax/VoiceInk) | 2.27 | chosen in onboarding | Parakeet TDT 0.6B v3, Core ML (~450 MB) |
-| [OpenWhispr](https://github.com/OpenWhispr/openwhispr) | 1.12.0 | Right Option (its Globe/Fn default can't be pressed by software), toggle | Parakeet Unified EN 0.6B, sherpa-onnx int8 (631 MB) |
-| [Vocet](https://github.com/vocetlabs/dictation-app) | built at the config's commit | Right Option, hold | OrukQwen 1.7B + Gemma 4 E2B cleanup |
+| App                                                    | Release                      | Key, mode                                                                | Local model                                         |
+| ------------------------------------------------------ | ---------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------- |
+| [Handy](https://github.com/cjpais/Handy)               | 0.10.1                       | Option+Space, hold-or-toggle (held here)                                 | Parakeet Unified EN 0.6B, Q8_0 GGUF (731 MB)        |
+| [Muesli](https://github.com/Muesli-HQ/muesli)          | 0.8.6                        | Right Option, hold                                                       | Parakeet Unified EN 0.6B, Core ML (~565 MB)         |
+| [FluidVoice](https://github.com/altic-dev/FluidVoice)  | 1.6.13                       | Right Option, toggle                                                     | Parakeet TDT 0.6B, Core ML (~450 MB)                |
+| [VoiceInk](https://github.com/Beingpax/VoiceInk)       | 2.27                         | chosen in onboarding                                                     | Parakeet TDT 0.6B v3, Core ML (~450 MB)             |
+| [OpenWhispr](https://github.com/OpenWhispr/openwhispr) | 1.12.0                       | Right Option (its Globe/Fn default can't be pressed by software), toggle | Parakeet Unified EN 0.6B, sherpa-onnx int8 (631 MB) |
+| [Vocet](https://github.com/vocetlabs/dictation-app)    | built at the config's commit | Right Option, hold                                                       | OrukQwen 1.7B + Gemma 4 E2B cleanup                 |
 
 Corrections to an app's configuration are welcome from its maintainers.
 
 ## Files
 
-| File | What it does |
-| --- | --- |
-| `bench`, `bench.py` | the one command (above) |
-| `harness.py` | the clip loop, outcomes and timing (pure Python; runs against a stub app in tests) |
-| `macos.py` | key events, BlackHole, playback, the TextEdit target, app restarts |
-| `score.py` | WER, the completeness checks, `score.json`, the verifier and tables |
-| `judge.py` | the optional judge metrics (ZER, AMEND) |
-| `fetch_clips.py` | downloads the dataset (pinned revision, sha256 checked) into `clips/` |
-| `apps/` | one config and one setup script per app; `common.sh` holds their helpers |
-| `test_*.py`, `test.sh` | offline tests |
+| File                   | What it does                                                                       |
+| ---------------------- | ---------------------------------------------------------------------------------- |
+| `bench`, `bench.py`    | the one command (above)                                                            |
+| `harness.py`           | the clip loop, outcomes and timing (pure Python; runs against a stub app in tests) |
+| `macos.py`             | key events, BlackHole, playback, the TextEdit target, app restarts                 |
+| `score.py`             | WER, the completeness checks, `score.json`, the verifier and tables                |
+| `judge.py`             | the optional judge metrics (ZER, AMEND)                                            |
+| `fetch_clips.py`       | downloads the dataset (pinned revision, sha256 checked) into `clips/`              |
+| `apps/`                | one config and one setup script per app; `common.sh` holds their helpers           |
+| `test_*.py`, `test.sh` | offline tests                                                                      |
 
 `clips/`, `out/` (per-clip results with transcripts), `.judge-cache/` and `work/` are git-ignored.
 
@@ -127,7 +127,7 @@ was computed from, and per clip: the outcome, edit and word counts against both 
 
 ## Data
 
-Clips and references: *Dictation Dataset*, public test split, Hugging Face `VoiceArena/Dictation_Dataset`,
+Clips and references: _Dictation Dataset_, public test split, Hugging Face `VoiceArena/Dictation_Dataset`,
 revision `ab671bb2`, 151 clips, licensed CC BY-NC 4.0 by its authors. They are fetched at run time and
 never redistributed here; the dataset's licence governs their use. This project is not affiliated with the
 dataset's authors or with any of the apps.

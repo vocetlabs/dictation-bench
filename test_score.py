@@ -123,6 +123,7 @@ class ScoreRunTests(unittest.TestCase):
         self.assertIn("github-macos-15", acc)
         self.assertNotIn("github-macos-15", speed)
         self.assertIn("| mac |", speed)
+        self.assertIn("| x | 1 |", acc)  # the app's name, not its config
 
 
 if __name__ == "__main__":

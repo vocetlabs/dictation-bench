@@ -19,6 +19,20 @@ class SmokeTests(unittest.TestCase):
         self.assertFalse(bench.smoke_ok(hn.Result("partial", bench.SMOKE_TEXT))[0])
         self.assertFalse(bench.smoke_ok(hn.Result("err_ready"))[0])
 
+    def test_log_counts_are_numbers_from_the_apps_log(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = pathlib.Path(d) / "app.log"
+            log.write_text('x cleanup outcome="applied" duration_ms=1\ny cleanup outcome="fallback_timeout"\n'
+                           'z cleanup outcome="applied"\n')
+            app = hn.App(name="a", version="1", process="p", app_path="/A.app", hotkey="ralt", logs=str(log),
+                         log_counts='cleanup outcome="([a-z_]+)"')
+            self.assertEqual(bench.log_counts(app), {"applied": 2, "fallback_timeout": 1})
+            self.assertEqual(bench.count_diff({"applied": 2, "fallback_timeout": 1}, {"applied": 1}),
+                             {"applied": 1, "fallback_timeout": 1})
+            self.assertEqual(bench.log_counts(hn.App(name="b", version="1", process="p", app_path="/A.app",
+                                                     hotkey="ralt")), {})
+
     def test_unknown_apps_are_named(self):
         with self.assertRaisesRegex(SystemExit, "handy"):
             bench.app_config("nosuchapp")
