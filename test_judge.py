@@ -207,7 +207,7 @@ class ClaudeCliTests(unittest.TestCase):
 
     def test_a_usage_limit_stops_and_a_rerun_resumes_from_the_cache(self):
         out = self.judge(FAKE_CLAUDE_LIMIT_AT="1")  # the second call hits the limit
-        self.assertIn("usage limit", out["incomplete"])
+        self.assertIn("stopped", out["incomplete"])
         self.assertEqual(out["judged"], 2)  # c1 judged, c3 (no output) needs no call
         self.assertEqual(int(self.state.read_text()), 2)  # stopped at once: no retries after the limit
         self.state.unlink()
@@ -224,6 +224,102 @@ class ClaudeCliTests(unittest.TestCase):
         ep = Endpoint()
         JudgeTests.judge(self, ep)
         self.assertEqual(len(ep.calls), 2)  # the API judge's cache was not answered by the CLI's
+
+
+class FakeBatchApi:
+    """OpenRouter's Batch API: POST /batches stores the requests; GET /batches/{id} is in progress for
+    `polls_before_done` polls, then completed with each request answered with its intended text (or an error
+    for the custom_ids in `fail`)."""
+
+    def __init__(self, polls_before_done=1, fail=(), model="anthropic/claude-opus-5.5"):
+        self.submits, self.polls, self.batches = [], 0, {}
+        self.polls_before_done, self.fail, self.model = polls_before_done, set(fail), model
+
+    def post(self, url, headers, body):
+        assert url.endswith("/batches") and list(body)[-1] == "requests"  # `requests` must come last
+        assert body["model"] == "anthropic/claude-opus-5.5"  # the base slug; the API resolves :batch
+        bid = f"batch_{len(self.submits) + 1}"
+        self.submits.append(body)
+        self.batches[bid] = body["requests"]
+        return {"id": bid, "status": "validating"}
+
+    def get(self, url, headers):
+        bid = url.rsplit("/", 1)[1]
+        self.polls += 1
+        if self.polls <= self.polls_before_done:
+            return {"id": bid, "status": "in_progress", "request_counts": {"total": 2, "completed": 0}}
+        results = []
+        for r in self.batches[bid]:
+            if r["custom_id"] in self.fail:
+                self.fail.discard(r["custom_id"])
+                results.append({"custom_id": r["custom_id"], "error": {"type": "server_error"}})
+                continue
+            intended = r["body"]["messages"][1]["content"].split("|")[1]
+            results.append({"custom_id": r["custom_id"], "response": {"status_code": 200, "body": {
+                "model": self.model, "choices": [{"message": {"content": json.dumps({"fixed": intended})}}]}}})
+        return {"id": bid, "status": "completed", "results": results[::-1]}  # not in input order
+
+
+class BatchTests(unittest.TestCase):
+    def setUp(self):
+        JudgeTests.setUp(self)
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def backend(self, api, **kw):
+        return jd.OpenRouterBatchJudge("k-not-real", post=api.post, get=api.get, sleep=lambda s: None,
+                                       cache_dir=self.cache, **kw)
+
+    def judge(self, backend, **kw):
+        return jd.judge_run(self.run, self.man, backend=backend, tools=fake_tools(), cache_dir=self.cache,
+                            backoff=0, log=lambda *_: None, **kw)
+
+    def test_one_batch_scores_the_run_and_the_variant_is_recorded(self):
+        api = FakeBatchApi(polls_before_done=2)
+        out = self.judge(self.backend(api))
+        self.assertEqual((out["zer"], len(api.submits), len(api.submits[0]["requests"])), (33.3, 1, 2))
+        self.assertEqual(out["judge"]["model"], "anthropic/claude-opus-5.5:batch")
+        self.assertNotIn("Bob", json.dumps(out))
+        self.assertFalse((self.cache / "pending-batch.json").exists())
+
+    def test_verdicts_cached_by_the_synchronous_judge_are_reused(self):
+        JudgeTests.judge(self, Endpoint())
+        api = FakeBatchApi()
+        out = self.judge(self.backend(api))
+        self.assertEqual((out["zer"], len(api.submits)), (33.3, 0))
+
+    def test_an_unfinished_batch_is_resumed_not_paid_for_twice(self):
+        api = FakeBatchApi(polls_before_done=10)
+        out = self.judge(self.backend(api, wait_s=120))
+        self.assertIn("stopped", out["incomplete"])
+        self.assertTrue((self.cache / "pending-batch.json").exists())
+        out = self.judge(self.backend(api))
+        self.assertEqual((out["zer"], len(api.submits)), (33.3, 1))
+
+    def test_failed_requests_are_resubmitted(self):
+        first = None
+        api = FakeBatchApi()  # the first submitted request fails once
+
+        def post(url, headers, body):
+            nonlocal first
+            if first is None:
+                first = body["requests"][0]["custom_id"]
+                api.fail = {first}
+            return FakeBatchApi.post(api, url, headers, body)
+        b = jd.OpenRouterBatchJudge("k", post=post, get=api.get, sleep=lambda s: None, cache_dir=self.cache)
+        out = self.judge(b)
+        self.assertEqual((out["zer"], len(api.submits), len(api.submits[1]["requests"])), (33.3, 2, 1))
+
+    def test_a_recheck_bypasses_the_cache_and_counts_matches(self):
+        self.judge(self.backend(FakeBatchApi()))
+        before = jd.cache_path(self.cache).read_text()
+        api = FakeBatchApi()
+        out = self.judge(self.backend(api), use_cache=False, limit=2)
+        self.assertEqual(len(api.submits[0]["requests"]), 2)
+        self.assertEqual(out["recheck"], {"compared": 2, "same_zero_edit_verdict": 2, "same_edit_count": 2})
+        self.assertNotIn("zer", out)
+        self.assertEqual(jd.cache_path(self.cache).read_text(), before)
 
 
 if __name__ == "__main__":
