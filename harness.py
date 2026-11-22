@@ -381,15 +381,20 @@ def write_rows(path: pathlib.Path, rows: dict[str, dict]) -> None:
     tmp.replace(path)
 
 
+def flushed(msg: str) -> None:
+    print(msg, flush=True)
+
+
 def fmt(v) -> str:
     return "" if v is None else str(v)
 
 
 def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, timing: Timing, out: pathlib.Path,
-            *, run: dict, restart_after_ambiguous: bool, attempts: int = 3, log=print) -> dict[str, dict]:
+            *, run: dict, restart_after_ambiguous: bool, attempts: int = 3, log=None) -> dict[str, dict]:
     """Runs the clips into out/results.csv, with out/run.json describing the run (`run`, which must carry
     a "fingerprint"). A rerun resumes only with the same fingerprint, and keeps only rows of these clips.
     App outcomes are final; infrastructure faults are retried. Returns the rows by clip_id."""
+    log = log or flushed  # one line per clip, visible at once in a CI log (stdout is a pipe there)
     out.mkdir(parents=True, exist_ok=True)
     meta_path, rows_path = out / "run.json", out / "results.csv"
     if meta_path.exists():
