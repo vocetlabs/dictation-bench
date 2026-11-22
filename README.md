@@ -47,6 +47,12 @@ every clip has a judgement. `BENCH_JUDGE_MODEL` and `BENCH_JUDGE_URL` change the
 under the same judge. In a repository of your own, add a `JUDGE_API_KEY` secret and pass it to the
 workflow's Judge step (`env: JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}`).
 
+With a logged-in [Claude Code](https://claude.com/claude-code) CLI, `./bench judge out/<run> --via claude-cli`
+asks the same prompt of `claude-opus-5-5` through `claude -p` (effort high, tools off, from an empty
+folder, no API key in its environment, one call at a time) on your Claude subscription instead, and writes
+`judge-claude-cli.json` beside the API judge's `judge.json`; tables name the path that scored a run. A usage
+limit stops the run; run the same command again later to resume from the cache.
+
 **Speed** (quiet real Macs only, not CI): `e2t` = end of speech in the clip to the last change of the text
 (primary); `post_stop` = key release to the last change. p50 and p95 over `ok` clips, with the failure
 rate (share of clips not `ok`) beside them. End of speech is the end of the last 30 ms frame whose energy

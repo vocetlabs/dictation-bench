@@ -15,6 +15,7 @@
     ./bench run --app handy --full         # the smoke gate, then all 151 clips, then score
     ./bench score out/handy                # WER from a finished run (refuses incomplete runs)
     ./bench judge out/handy                # optional ZER/AMEND (needs JUDGE_API_KEY; skipped without)
+    ./bench judge out/handy --via claude-cli   # the same judge prompt through a logged-in `claude -p`
     ./bench verify out/handy/score.json    # recompute the headline from the per-clip numbers
     ./bench table out/*/score.json         # accuracy and speed tables
     ./bench dry-run                        # the loop against a simulated app (no macOS)
@@ -199,29 +200,41 @@ def score_cmd(run_dir: pathlib.Path, manifest: pathlib.Path | None = None) -> in
     return 0
 
 
-def judge_cmd(run_dir: pathlib.Path) -> int:
-    key = os.environ.get("JUDGE_API_KEY", "")
-    if not key:
-        print("judge metrics: not computed (no key)")
-        return 0
+JUDGE_FILES = {"openrouter": "judge.json", "claude-cli": "judge-claude-cli.json"}
+
+
+def judge_cmd(run_dir: pathlib.Path, via: str = "openrouter", out_name: str | None = None) -> int:
+    """ZER/AMEND for a finished run. openrouter (default) needs JUDGE_API_KEY; claude-cli uses the logged-in
+    Claude Code CLI (`claude -p`, the subscription) and needs no key. Each writes its own file."""
     import judge as jd
+    if via == "claude-cli":
+        backend = jd.ClaudeCliJudge()
+    else:
+        key = os.environ.get("JUDGE_API_KEY", "")
+        if not key:
+            print("judge metrics: not computed (no key)")
+            return 0
+        backend = jd.OpenRouterJudge(key)
     try:
-        out = jd.judge_run(run_dir, HERE / "clips" / "manifest.csv", key)
+        out = jd.judge_run(run_dir, HERE / "clips" / "manifest.csv", backend=backend)
     except sc.Incomplete as e:
         print(f"judge metrics: not computed ({e})", file=sys.stderr)
         return 1
-    (run_dir / "judge.json").write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
+    (run_dir / (out_name or JUDGE_FILES[via])).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
     return 0 if "zer" in out else 1
 
 
 def with_judge(score_json: pathlib.Path) -> dict:
-    """score.json, plus ZER/AMEND from judge.json beside it when that judged the same results."""
+    """score.json, plus ZER/AMEND from a judge file beside it (judge.json, else judge-claude-cli.json) when
+    that judged the same results; judge_model says which judge and path scored it."""
     s = json.loads(score_json.read_text())
-    jp = score_json.with_name("judge.json")
-    if jp.exists():
-        j = json.loads(jp.read_text())
-        if j.get("results_sha256") == s.get("results_sha256") and "zer" in j:
-            s.update(zer=j["zer"], amend=j["amend"], judge_model=j["judge"]["model"])
+    for name in JUDGE_FILES.values():
+        jp = score_json.with_name(name)
+        if jp.exists():
+            j = json.loads(jp.read_text())
+            if j.get("results_sha256") == s.get("results_sha256") and "zer" in j:
+                s.update(zer=j["zer"], amend=j["amend"], judge_model=j["judge"]["model"])
+                break
     return s
 
 
@@ -249,6 +262,9 @@ def main(argv: list[str] | None = None) -> int:
     sc_.add_argument("run_dir", type=pathlib.Path)
     j = sub.add_parser("judge")
     j.add_argument("run_dir", type=pathlib.Path)
+    j.add_argument("--via", choices=sorted(JUDGE_FILES), default="openrouter",
+                   help="openrouter (JUDGE_API_KEY) or claude-cli (a logged-in `claude`, no key)")
+    j.add_argument("--out", help="output file name in the run folder (default: per --via)")
     v = sub.add_parser("verify")
     v.add_argument("score_json", type=pathlib.Path)
     t = sub.add_parser("table")
@@ -271,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "score":
         return score_cmd(a.run_dir)
     if a.cmd == "judge":
-        return judge_cmd(a.run_dir)
+        return judge_cmd(a.run_dir, a.via, a.out)
     if a.cmd == "verify":
         bad = sc.verify(json.loads(a.score_json.read_text()))
         print("consistent" if not bad else "\n".join(bad))
