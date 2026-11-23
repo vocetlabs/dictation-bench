@@ -20,6 +20,12 @@
     ./bench verify out/handy/score.json    # recompute the headline from the per-clip numbers
     ./bench table out/*/score.json         # accuracy and speed tables
     ./bench dry-run                        # the loop against a simulated app (no macOS)
+    ./bench host-run --jobs handy:shipped,vocet:shipped --passes 1   # the headline passes on this Mac
+    ./bench report out/host/*/pass*/*      # passes, means, speaker-bootstrap intervals (markdown)
+    ./bench judge-check out/host/*/pass1/* # a second judge on a stratified sample (JUDGE_API_KEY)
+
+Apps are configured per profile: apps/<app>.<profile>.json, profile shipped, best-asr or local-cleanup
+(--app handy is handy.shipped; --app handy:best-asr picks a profile).
 
 A run on a machine whose speed doesn't count (a CI runner) uses --accuracy-only: no latency is reported.
 """
@@ -44,11 +50,53 @@ SMOKE_TEXT = "Please send the quarterly report to the finance team before Friday
 SMOKE_MIN_WORDS = 0.8  # share of the smoke sentence's words the app must get right
 
 
+def config_name(name: str) -> str:
+    """handy, handy:best-asr and handy.best-asr name apps/handy.<profile>.json (shipped by default)."""
+    name = name.replace(":", ".")
+    return name if "." in name else f"{name}.shipped"
+
+
 def app_config(name: str) -> hn.App:
+    name = config_name(name)
     path = HERE / "apps" / f"{name}.json"
     if not path.exists():
         raise SystemExit(f"no apps/{name}.json; apps: {sorted(p.stem for p in (HERE / 'apps').glob('*.json'))}")
     return hn.load_app(path)
+
+
+def runnable(app: hn.App) -> str | None:
+    """Why this profile isn't run on its own (n/a, or the same configuration as another), else None."""
+    if app.na:
+        return f"{app.name}: n/a ({app.na})"
+    if app.same_as:
+        return f"{app.name}: the same configuration as {app.same_as}; run that"
+    return None
+
+
+def file_tree_sha256(path: pathlib.Path) -> tuple[str, int]:
+    """A model file's SHA-256 and size; for a folder (a Core ML bundle), the SHA-256 of its files' sorted
+    relative paths and hashes, and their total size."""
+    if path.is_file():
+        return sc.digest(path), path.stat().st_size
+    import hashlib
+    h, size = hashlib.sha256(), 0
+    for f in sorted(x for x in path.rglob("*") if x.is_file()):
+        h.update(f"{f.relative_to(path)}\0{sc.digest(f)}\n".encode())
+        size += f.stat().st_size
+    return h.hexdigest(), size
+
+
+def model_artifacts(app: hn.App) -> dict:
+    """What the profile's model files are on disk: SHA-256 each, and the total size (the model disk column)."""
+    shas, total = {}, 0
+    for f in app.model.get("files", []):
+        p = pathlib.Path(os.path.expanduser(f))
+        if p.exists():
+            shas[f], size = file_tree_sha256(p)
+            total += size
+        else:
+            shas[f] = "missing"
+    return {"model_sha256": shas, "model_size_mb": round(total / 2**20, 1) if total else None}
 
 
 def machine(ci: bool) -> None:
@@ -69,11 +117,15 @@ def machine(ci: bool) -> None:
 
 
 def setup(name: str, ci: bool) -> None:
-    script = HERE / "apps" / f"{name}.sh"
     app = app_config(name)
+    if app.na:
+        raise SystemExit(runnable(app))
+    script = HERE / "apps" / f"{app.base}.sh"
     if ci and not app.hosted_setup:
-        raise SystemExit(f"{name} has no unattended setup yet (apps/{name}.json hosted_setup=false): local only")
-    env = dict(os.environ, BENCH_CI="1" if ci else "", BENCH=str(HERE))
+        raise SystemExit(f"{app.name} has no unattended setup yet (apps/{app.name}.json hosted_setup=false): local only")
+    if app.verify:
+        print(f"setup: {app.name} needs the Lead to verify in a VM: {app.verify}", file=sys.stderr)
+    env = dict(os.environ, BENCH_CI="1" if ci else "", BENCH=str(HERE), BENCH_PROFILE=app.profile)
     subprocess.run(["bash", str(script)], check=True, env=env)
 
 
@@ -131,16 +183,28 @@ def show_logs(app: hn.App, lines: int = 40) -> None:
 
 
 def run(a: argparse.Namespace) -> int:
-    from macos import BlackHoleDriver, TextEditTarget, preflight
     app = app_config(a.app)
+    if why := runnable(app):
+        raise SystemExit(why)
     if a.hotkey:
         app.hotkey, app.notes = a.hotkey, (app.notes + f" (hotkey overridden: {a.hotkey})").strip()
+    return run_job(app, smoke_only=a.smoke, accuracy_only=a.accuracy_only, machine=a.machine, output=a.output,
+                   limit=a.limit, attempts=a.attempts)
+
+
+def run_job(app: hn.App, *, smoke_only: bool = False, accuracy_only: bool = False, machine: str = "",
+            output: pathlib.Path | None = None, limit: int | None = None, attempts: int = 3,
+            seed: int | None = None, extra: dict | None = None) -> int:
+    """The smoke dictation (the gate and the warm-up), then the clips (in a seeded order when `seed` is
+    set), then the score. run.json records the app's release, model files, settings and the machine."""
+    from macos import BlackHoleDriver, TextEditTarget, hardware, preflight
     env = preflight(app)
-    timing = hn.accuracy_only() if a.accuracy_only else hn.Timing()
+    timing = hn.accuracy_only() if accuracy_only else hn.Timing()
     driver = BlackHoleDriver(app, timing)
     target = TextEditTarget(pathlib.Path.home() / "bench" / "scratch.txt")
     restart = hn.restarts_after_unclear(app)
     caff = subprocess.Popen(["caffeinate", "-dimsu"])
+    rows: dict = {}
     try:
         with tempfile.TemporaryDirectory() as tmp:
             clip = smoke_clip(pathlib.Path(tmp))
@@ -158,24 +222,31 @@ def run(a: argparse.Namespace) -> int:
                 print("the smoke dictation failed: fix the setup before a full run", file=sys.stderr)
                 show_logs(app)
                 return 2
-        if a.smoke:
+        if smoke_only:
             return 0
         clips_dir = HERE / "clips"
         manifest = clips_dir / "manifest.csv"
         if not manifest.exists():
             raise SystemExit("no clips: ./bench fetch")
-        clips = hn.load_clips(clips_dir, a.limit)
-        out = a.output or HERE / "out" / f"{app.name}-{a.machine or 'local'}"
+        clips = hn.load_clips(clips_dir, limit)
+        if seed is not None:  # the same order for every app in a pass
+            import random
+            random.Random(seed).shuffle(clips)
+        out = output or HERE / "out" / f"{app.name}-{machine or 'local'}"
         settings = {f: sc.digest(pathlib.Path(os.path.expanduser(f)))
                     for f in app.settings_files if pathlib.Path(os.path.expanduser(f)).exists()}
-        info = {"app": asdict(app), "effective": {"binary_sha256": env["binary_sha256"], "settings_sha256": settings},
+        info = {"app": asdict(app), "effective": {"binary_sha256": env["binary_sha256"], "settings_sha256": settings,
+                                                  "release_sha256": app.release.get("sha256", ""),
+                                                  **model_artifacts(app)},
                 "harness": hn.HARNESS_VERSION, "timing": asdict(timing), "timed": timing.timed,
-                "dataset": DATASET, "manifest_sha256": sc.digest(manifest), "machine": a.machine or "local",
-                "macos": env["macos"], "clip_ids": [c.clip_id for c in clips]}
+                "dataset": DATASET, "manifest_sha256": sc.digest(manifest), "machine": machine or "local",
+                "macos": env["macos"], "clip_ids": [c.clip_id for c in clips], "clip_order_seed": seed,
+                **(extra or {})}
         info["fingerprint"] = hn.fingerprint(**info)
+        info["hardware"] = hardware()  # not in the fingerprint: the load changes between resumes
         before = log_counts(app)
         rows = hn.run_all(clips, driver, target, hn.Clock(), timing, out, run=info,
-                          restart_after_ambiguous=restart, attempts=a.attempts)
+                          restart_after_ambiguous=restart, attempts=attempts)
         if app.log_counts:  # e.g. how many cleanups were applied or fell back, over this run's clips
             meta = json.loads((out / "run.json").read_text())
             meta["app_log_counts"] = count_diff(log_counts(app), before)
@@ -248,6 +319,127 @@ def with_judge(score_json: pathlib.Path) -> dict:
     return s
 
 
+def host_plan(jobs: list[str], passes: int, first_pass: int = 1, seed: int = 2026) -> list[dict]:
+    """The passes of a host run: the app order rotates by one each pass, and every app in a pass gets the
+    same clip order (seed + pass)."""
+    return [{"pass": p, "seed": seed + p, "order": jobs[(p - 1) % len(jobs):] + jobs[:(p - 1) % len(jobs)]}
+            for p in range(first_pass, first_pass + passes)]
+
+
+def host_run(a: argparse.Namespace) -> int:
+    """Passes of app:profile jobs on this Mac (BENCH2): each pass in its own folder, the warm-up smoke
+    dictation first, the machine's input and text corrections restored at the end, the machine recorded."""
+    from datetime import datetime
+    from macos import hardware, restore_machine_state, save_machine_state, vm_running
+    jobs = [config_name(j) for j in a.jobs.split(",") if j]
+    for j in jobs:
+        if why := runnable(app_config(j)):
+            raise SystemExit(why)
+    if vm_running():
+        raise SystemExit("a virtual machine is running: stop it before a host run (timed numbers)")
+    out = a.out or HERE / "out" / "host" / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    plan = host_plan(jobs, a.passes, a.first_pass, a.seed)
+    log = {"plan": plan, "hardware_start": hardware(), "jobs": []}
+    write = lambda: (out / "host.json").write_text(json.dumps(log, indent=1) + "\n")  # noqa: E731
+    write()
+    print(f"host run -> {out}: {len(plan)} passes of {', '.join(jobs)}; load {log['hardware_start']['load']}")
+    state = save_machine_state()
+    try:
+        machine(False)
+        for step in plan:
+            for name in step["order"]:
+                app = app_config(name)
+                entry = {"pass": step["pass"], "config": name, "load_before": hardware()["load"]}
+                try:
+                    if not a.no_setup:
+                        setup(name, False)
+                    entry["exit"] = run_job(app, machine=a.machine, output=out / f"pass{step['pass']}" / name,
+                                            seed=step["seed"], extra={"host_run": {"pass": step["pass"]}})
+                except (subprocess.CalledProcessError, SystemExit) as e:
+                    entry["exit"], entry["error"] = 1, str(e)[:200]
+                entry["load_after"] = hardware()["load"]
+                log["jobs"].append(entry)
+                write()
+    finally:
+        restore_machine_state(state)
+        log["hardware_end"] = hardware()
+        write()
+    failed = [j for j in log["jobs"] if j.get("exit")]
+    print(f"host run done: {len(log['jobs']) - len(failed)}/{len(log['jobs'])} jobs scored; then: ./bench judge "
+          f"<run> and ./bench report {out}/pass*/*")
+    return 1 if failed else 0
+
+
+def speakers() -> dict[str, str]:
+    man = HERE / "clips" / "manifest.csv"
+    return {r["clip_id"]: r.get("speaker_id") or r["clip_id"] for r in sc.read_csv(man)} if man.exists() else {}
+
+
+def report_cmd(dirs: list[pathlib.Path], as_json: bool, resamples: int, seed: int) -> int:
+    import report as rp
+    runs = [rp.load_run(d) for d in dirs if (d / "score.json").exists()]
+    if not runs:
+        raise SystemExit("no scored runs (folders with score.json)")
+    summary = rp.summarize(runs, speakers(), resamples, seed)
+    host = next((json.loads(h.read_text()) for d in dirs for h in (d.parent.parent / "host.json",) if h.exists()), None)
+    hw = (host or {}).get("hardware_start") or runs[0]["run"].get("hardware")
+    print(json.dumps({**summary, "hardware": hw}, indent=1) if as_json else rp.markdown(summary, hw))
+    return 0
+
+
+def judge_check(dirs: list[pathlib.Path], sample: int, seed: int, model: str) -> int:
+    """The second judge (another model family) on a seeded stratified sample of each run's clips: agreement
+    with the run's judge, kappa, both ZERs, rank changes. judge-check.json per run (numbers and clip ids); the
+    clips the judges disagree on go to work/judge-check/ for a blinded human check (local only: it has text)."""
+    import judge as jd
+    import report as rp
+    key = os.environ.get("JUDGE_API_KEY", "")
+    if not key:
+        print("judge check: not run (no JUDGE_API_KEY)")
+        return 0
+    manifest, checks = HERE / "clips" / "manifest.csv", {}
+    ref = {m["clip_id"]: m for m in sc.read_csv(manifest)}
+    human = HERE / "work" / "judge-check"
+    human.mkdir(parents=True, exist_ok=True)
+    rows, keys = [], []
+    for d in dirs:
+        run = rp.load_run(d)
+        if not run["judge"]:
+            print(f"{d}: no judge file for these results: ./bench judge {d} first", file=sys.stderr)
+            return 1
+        ids = rp.stratified_sample(run["judge"]["per_clip"], sample, seed)
+        second = jd.judge_run(d, manifest, backend=jd.OpenRouterJudge(key, model=model), only=set(ids))
+        ag = rp.agreement(run["judge"]["per_clip"], second["per_clip"], ids)
+        out = {"primary": run["judge"]["judge"], "secondary": second["judge"], "seed": seed, "sample": ids, **ag}
+        (d / "judge-check.json").write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
+        checks[run["config"]] = ag
+        drafts = {r["clip_id"]: r["transcript"] for r in sc.read_csv(d / "results.csv")}
+        verdict = {c["clip_id"]: c["zero_edit"] for c in run["judge"]["per_clip"]}
+        verdict2 = {c["clip_id"]: c["zero_edit"] for c in second["per_clip"]}
+        for cid in ag.get("disagreements", []):
+            n = len(rows) + 1
+            rows.append({"item": n, "draft": drafts[cid], "intended": ref[cid]["intended_text"], "sendable_as_is": ""})
+            keys.append({"item": n, "config": run["config"], "clip_id": cid, "primary_zero_edit": verdict[cid],
+                         "secondary_zero_edit": verdict2[cid]})
+    import csv
+    import random
+    order = list(range(len(rows)))
+    random.Random(seed).shuffle(order)  # blinded: no config, no verdicts, shuffled
+    for path, data in ((human / "items.csv", [rows[i] for i in order]), (human / "key.csv", keys)):
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, list(data[0]) if data else ["item"])
+            w.writeheader()
+            w.writerows(data)
+    for name, ag in sorted(checks.items()):
+        print(f"{name}: n={ag.get('n')} agreement {ag.get('agreement')}% kappa {ag.get('kappa')} "
+              f"ZER {ag.get('zer_primary')} vs {ag.get('zer_secondary')}")
+    changes = rp.rank_changes(checks)
+    print("rank changes: " + ("; ".join(changes) if changes else "none"))
+    print(f"blinded human check: {human}/items.csv (key.csv holds the answers; both local only)")
+    return 0
+
+
 def positive_int(v: str) -> int:
     n = int(v)
     if n < 1:
@@ -292,6 +484,24 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("score_json", type=pathlib.Path)
     t = sub.add_parser("table")
     t.add_argument("scores", nargs="+", type=pathlib.Path)
+    h = sub.add_parser("host-run", help="passes of app:profile jobs on this Mac, for the headline numbers")
+    h.add_argument("--jobs", required=True, help="comma-separated app:profile, e.g. handy:shipped,vocet:shipped")
+    h.add_argument("--passes", type=positive_int, default=1)
+    h.add_argument("--first-pass", type=positive_int, default=1, help="number of the first pass (another night)")
+    h.add_argument("--seed", type=int, default=2026, help="clip order: seed + pass, the same for every app")
+    h.add_argument("--machine", default=os.environ.get("BENCH_MACHINE", "owner-mac"))
+    h.add_argument("--out", type=pathlib.Path)
+    h.add_argument("--no-setup", action="store_true", help="the apps are already set up for these profiles")
+    rp_ = sub.add_parser("report", help="passes, means and speaker-bootstrap intervals (markdown)")
+    rp_.add_argument("runs", nargs="+", type=pathlib.Path)
+    rp_.add_argument("--json", action="store_true")
+    rp_.add_argument("--resamples", type=positive_int, default=2000)
+    rp_.add_argument("--seed", type=int, default=0)
+    jc = sub.add_parser("judge-check", help="a second judge on a seeded stratified sample (JUDGE_API_KEY)")
+    jc.add_argument("runs", nargs="+", type=pathlib.Path)
+    jc.add_argument("--sample", type=positive_int, default=40)
+    jc.add_argument("--seed", type=int, default=7)
+    jc.add_argument("--model", default=None, help="the second judge (default: judge.SECOND_JUDGE_MODEL)")
     sub.add_parser("windows", help="on-screen windows (owner and title), to debug a setup")
     d = sub.add_parser("dry-run")
     d.add_argument("-n", type=int, default=5)
@@ -319,6 +529,13 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "table":
         print(sc.table([with_judge(p) for p in a.scores]))
         return 0
+    if a.cmd == "host-run":
+        return host_run(a)
+    if a.cmd == "report":
+        return report_cmd(a.runs, a.json, a.resamples, a.seed)
+    if a.cmd == "judge-check":
+        import judge as jd
+        return judge_check(a.runs, a.sample, a.seed, a.model or jd.SECOND_JUDGE_MODEL)
     if a.cmd == "windows":
         import Quartz
         for w in Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID):
