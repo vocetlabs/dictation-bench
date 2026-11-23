@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # FluidVoice 1.6.13. shipped: as its onboarding leaves it on Apple silicon (its default model "FluidVoice
-# Pick": Parakeet TDT v3, Core ML, through FluidAudio; Right Option; toggle). best-asr: Cohere Transcribe
-# (6-bit), English, which the app downloads itself. local-cleanup: the shipped model plus AI enhancement
+# Pick": Parakeet TDT v3, Core ML, through FluidAudio; Right Option; toggle). best-asr: Whisper Large
+# (its highest-rated model, 'Best possible accuracy'), which the app downloads itself. local-cleanup: the shipped model plus AI enhancement
 # through its Ollama provider (pinned model), which has to be verified once in the app. See CONFIGS.md.
 . "$(dirname "$0")/common.sh"
 install_dmg https://github.com/altic-dev/FluidVoice/releases/download/v1.6.13/Fluid-oss-1.6.13.dmg \
@@ -10,17 +10,15 @@ grant com.FluidApp.app
 # FluidAudio's model folder (ParakeetSpeechModelCatalog v3: folder parakeet-tdt-0.6b-v3-coreml; an existing
 # complete cache is used as is). The compiled models and vocabulary, pinned to a revision.
 models="$HOME/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3-coreml"
-uvx --quiet --from huggingface_hub==0.26.2 huggingface-cli download FluidInference/parakeet-tdt-0.6b-v3-coreml \
-  --revision 7dd20fe6b1797d35f5e3307e8b1732d9a178edfe --include "*.mlmodelc/*" "*.json" --local-dir "$models" >/dev/null
+hf_folder FluidInference/parakeet-tdt-0.6b-v3-coreml 7dd20fe6b1797d35f5e3307e8b1732d9a178edfe "$models" \
+  "*.mlmodelc/*" "*.json"
 d=com.FluidApp.app
-osascript -e 'quit app "FluidVoice"' >/dev/null 2>&1 || true
 defaults write $d OnboardingCompleted -bool true
 case $PROFILE in
   best-asr)
-    defaults write $d SelectedSpeechModel -string cohere-transcribe-6bit
-    defaults write $d SelectedCohereLanguage -string en
+    defaults write $d SelectedSpeechModel -string whisper-large
     defaults write $d EnableAIProcessing -bool false
-    log "best-asr: let FluidVoice download Cohere Transcribe (Settings > Voice Engine)" ;;
+    log "best-asr: let FluidVoice download Whisper Large (Settings > Voice Engine)" ;;
   local-cleanup)
     ollama_model gemma3:4b
     defaults write $d SelectedSpeechModel -string parakeet-tdt

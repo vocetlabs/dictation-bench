@@ -18,7 +18,8 @@
     "files": [
       "~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3-coreml"
     ],
-    "cleanup_model": "Ollama gemma3:4b"
+    "cleanup_model": "Ollama gemma3:4b",
+    "cleanup_ollama": "gemma3:4b"
   },
   "language": "en",
   "cleanup": "on (AI enhancement, Ollama gemma3:4b)",
@@ -35,5 +36,18 @@
     "SelectedProviderID": "ollama",
     "SelectedAIModel": "gemma3:4b"
   },
-  "verify": "FluidVoice needs the Ollama provider verified in its settings (it stores a fingerprint), so the setup can't preseed it: verify it once in the app."
+  "verify": "FluidVoice needs the Ollama provider verified in its settings (it stores a fingerprint), so the setup can't preseed it: verify it once in the app.",
+  "state": {
+    "paths": [
+      "~/Library/Application Support/FluidAudio",
+      "~/Library/Application Support/com.FluidApp.app",
+      "~/Library/Caches/com.FluidApp.app"
+    ],
+    "defaults": [
+      "com.FluidApp.app"
+    ]
+  },
+  "settings_source": {
+    "defaults": "com.FluidApp.app"
+  }
 }

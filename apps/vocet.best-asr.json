@@ -33,5 +33,19 @@
     "hotkey": "RightAlt",
     "share_usage_events": false
   },
-  "verify": "With the Gemma file moved aside, Vocet 0.2.0 pastes the raw OrukQwen text (log: no cleanup line) and doesn't download Gemma again."
+  "verify": "With the Gemma file moved aside, Vocet 0.2.0 pastes the raw OrukQwen text (log: no cleanup line) and doesn't download Gemma again.",
+  "state": {
+    "paths": [
+      "~/Library/Application Support/com.dictationapp.desktop",
+      "~/Library/Logs/com.dictationapp.desktop",
+      "~/Library/Caches/com.dictationapp.desktop",
+      "~/Library/WebKit/com.dictationapp.desktop"
+    ],
+    "defaults": [
+      "com.dictationapp.desktop"
+    ]
+  },
+  "settings_source": {
+    "file": "~/Library/Application Support/com.dictationapp.desktop/settings.json"
+  }
 }

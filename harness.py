@@ -140,6 +140,10 @@ class App:
     same_as: str = ""                             # this profile is that profile's configuration: not run twice
     na: str = ""                                  # why the app has no such profile ("n/a" in the tables)
     verify: str = ""                              # what the Lead still checks in a VM before a scored run
+    state: dict = field(default_factory=dict)     # {paths, defaults}: the app's data and preference domains,
+                                                  #   set aside on a host run and put back exactly
+    settings_source: dict = field(default_factory=dict)  # {file[, key]} or {defaults}: where the app keeps
+                                                  #   `settings`, read back before a run is scored
 
     @property
     def base(self) -> str:
@@ -356,13 +360,12 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
         raise InfraError("err_target", "the document lost the front while dictating")
     status = "empty"
     while True:
-        poll()
-        now = clock.now()
-        if text.strip() and now - last >= timing.settle:
-            status = "ok"
-            break
-        if now - t_stop >= timing.timeout:
+        if clock.now() - t_stop >= timing.timeout:  # the deadline first: no read after it counts
             status = "partial" if text.strip() else "empty"
+            break
+        poll()
+        if text.strip() and clock.now() - last >= timing.settle:
+            status = "ok"
             break
         clock.sleep(timing.poll)
     if not target.verify():
@@ -451,8 +454,9 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
                 res = Result(e.status, error=str(e))
             if res.status == "ok":
                 break
-            ambiguous_toggle = restart_after_ambiguous and res.status != "ok"
-            driver.recover(restart=ambiguous_toggle or res.status in ("partial", "late"))
+            # Any outcome but ok restarts the app, whatever its mode: a paste still pending (an empty hold
+            # app can paste after the quiet period) dies with it instead of landing in the next clip.
+            driver.recover(restart=True)
             if res.status in APP_OUTCOMES:
                 break
             clock.sleep(timing.gap)

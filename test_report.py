@@ -77,11 +77,31 @@ class SummaryTests(unittest.TestCase):
         md = rp.markdown(rp.summarize(self.runs(), SPEAKERS, n=100), {"chip": "Apple M4 Pro", "ram_gb": 48})
         self.assertIn("### shipped: raw speech", md)
         self.assertIn("### shipped: speech + local cleanup", md)
-        for label in ("Spoken WER %", "ZER % (judge est.)", "AMEND % (cond.)", "Failure %", "Peak RAM MB", "Model MB"):
+        for label in ("Spoken WER % [95% CI]", "ZER % (judge est.)", "AMEND % (clips with output)", "Failure %",
+                      "p50 s (ok clips)", "Peak RAM MB", "Model MB"):
             self.assertIn(label, md)
         self.assertIn("model of a.shipped", md)
         self.assertIn("Apple M4 Pro", md)
-        self.assertIn(rp.DISCLOSURE, md)
+        tables = md.split("### ")[1:]
+        self.assertTrue(all(rp.DISCLOSURE in t for t in tables), "the disclosure beside every table")
+        self.assertIn("| a.shipped | 15.00 [15.00, 15.00]".split(" | ")[0], md)
+        self.assertIn("| a.shipped | p2/a.shipped | 20.00", md)  # each pass shown on its own
+        self.assertIn("| a.shipped | model of a.shipped | 2 | 15.00 [15.00, 15.00]", md)  # pooled, with its CI
+
+    def test_runs_that_cant_be_compared_are_refused(self):
+        runs = self.runs()
+        for r in runs:
+            r["run"].update(timing={"timeout": 30}, manifest_sha256="m", dataset={"n": 1},
+                            hardware={"chip": "M4", "ram_gb": 48, "macos_build": "24G"})
+            if r["judge"]:
+                r["judge"]["judge"] = {"model": "j", "prompt_version": "v1", "prompt_fingerprint": "f"}
+        self.assertEqual(rp.check_comparable(runs, SPEAKERS), [])
+        runs[1]["run"]["timing"] = {"timeout": 60}
+        runs[2]["judge"]["judge"]["model"] = "other"
+        problems = rp.check_comparable(runs, {k: v for k, v in SPEAKERS.items() if k != "c3"})
+        self.assertTrue(any("protocol" in p for p in problems))
+        self.assertTrue(any("judges" in p for p in problems))
+        self.assertTrue(any("speaker" in p for p in problems))
 
     def test_load_run_takes_the_judge_that_judged_these_results(self):
         with tempfile.TemporaryDirectory() as d:

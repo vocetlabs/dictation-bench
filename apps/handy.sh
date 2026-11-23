@@ -26,11 +26,11 @@ esac
 extra=""
 if [ "$PROFILE" = local-cleanup ]; then
   ollama_model gemma3:4b
-  extra=', "post_process_enabled": true, "post_process_provider_id": "custom", "post_process_models": {"custom": "gemma3:4b"}'
+  # Handy 0.10.1 skips post-processing without a selected prompt: its default one, by id.
+  extra=', "post_process_enabled": true, "post_process_provider_id": "custom", "post_process_models": {"custom": "gemma3:4b"}, "post_process_selected_prompt_id": "default_improve_transcriptions"'
 fi
 # Choosing a model completes onboarding (settings.rs: onboarding_completed = !selected_model.is_empty()).
 dir="$HOME/Library/Application Support/com.pais.handy"
 mkdir -p "$dir"
-osascript -e 'quit app "Handy"' >/dev/null 2>&1 || true
 printf '{"settings": {"selected_model": "%s/%s", "selected_language": "en"%s}}\n' "$repo" "$file" "$extra" >"$dir/settings_store.json"
 start Handy.app handy

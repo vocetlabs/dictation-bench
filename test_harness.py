@@ -122,6 +122,11 @@ class ClipTests(unittest.TestCase):
         self.assertEqual((res.status, res.transcript), ("late", REF))
         self.assertIsNone(res.e2t_s)
 
+    def test_a_paste_just_after_the_deadline_earns_nothing(self):
+        clock, app, drv, tgt = rig(latency=30.001)  # pastes 1 ms after stop + 30 s
+        res = hn.run_clip(clip(), drv, tgt, clock, hn.Timing())
+        self.assertEqual((res.status, res.post_stop_s), ("late", None))
+
     def test_text_still_changing_at_the_deadline_is_partial(self):
         clock, app, drv, tgt = rig(latency=4.0, paste_in_chunks=40)  # 40 pieces 0.1 s apart from 4 s
         res = hn.run_clip(clip(), drv, tgt, clock, hn.Timing(timeout=5, settle=2))
@@ -167,6 +172,11 @@ class RunTests(unittest.TestCase):
         self.out = self.out.with_name("run2")
         rows = self.run_all([clip(2)], r, fp="f2")
         self.assertEqual((rows["c2"]["status"], rows["c2"]["attempts"]), ("err_ready", 3))
+
+    def test_any_app_is_restarted_after_an_outcome_that_isnt_ok(self):
+        r = rig(latency=50.0)  # a hold app: empty, its paste still pending
+        self.run_all([clip(1)], r, hn.Timing(timeout=5, quiet=1))
+        self.assertEqual(r[1].restarts, 1)
 
     def test_a_toggle_app_is_restarted_after_an_unclear_outcome(self):
         r = rig(latency=50.0)

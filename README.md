@@ -71,7 +71,7 @@ folder, no API key in its environment, one call at a time) on a Claude subscript
 **Speed** (quiet real Macs only, not CI): `post_stop` = key release to the last change of the text (the
 results tables' latency: the deadline also starts at the release); `e2t` = end of speech in the clip to the
 last change. p50 and p95 over `ok` clips, so they are conditional: read them with the failure rate (share
-of clips not `ok`) beside them. AMEND is conditional on output the same way. The rules are fixed in
+of clips not `ok`) beside them. AMEND is pooled over clips with output only. The rules are fixed in
 [CONFIGS.md](CONFIGS.md) before any scored run. End of speech is the end of the last 30 ms frame whose energy
 is at least 10% of the clip's loud frames.
 
@@ -96,7 +96,7 @@ installed (system output left on the speakers), and Accessibility for the termin
 ```sh
 ./bench fetch                         # the clips and references from their source (pinned, sha256 checked)
 ./bench machine                       # BlackHole as default input, automatic corrections off
-./bench setup --app handy             # install and configure the app; allow Microphone/Accessibility when asked
+./bench setup --app handy --overwrite # a test Mac or VM: install into work/Applications and configure; allow Microphone/Accessibility
 ./bench run --app handy --smoke       # one synthetic dictation: is the setup right?
 ./bench run --app handy --full        # smoke gate, all clips, then score -> out/handy-local/score.json
 ./bench verify out/handy-local/score.json
@@ -122,7 +122,10 @@ configuration as another (then it isn't run twice). [CONFIGS.md](CONFIGS.md) lis
 ./bench judge-check out/host/<stamp>/pass1/*                          # a second judge (JUDGE_API_KEY)
 ```
 
-`host-run` refuses to start while a virtual machine runs, logs the load average before and after each job,
+Nothing of the owner's is deleted or overwritten: apps go into the bench's own folder, and for each job
+every benchmarked app is quit and the selected app's settings, data and models are moved aside and put back
+exactly afterwards (checked); see [CONFIGS.md](CONFIGS.md). Close TextEdit first. `./bench restore-host`
+finishes the restoration if a run is cut off. `host-run` refuses to start while a virtual machine runs, logs the load average before and after each job,
 sets each app up for its profile, rotates the app order each pass, gives every app in a pass the same seeded
 clip order, writes each pass to its own folder, runs one warm-up dictation (the smoke sentence) before each
 app's clips, records the chip, memory, macOS build and power source (`host.json`, `run.json`), and puts the
@@ -168,18 +171,19 @@ Disclosure: this bench is built and run by the developer of Vocet, one of the be
 
 ## Files
 
-| File                   | What it does                                                                       |
-| ---------------------- | ---------------------------------------------------------------------------------- |
-| `bench`, `bench.py`    | the one command (above)                                                            |
-| `harness.py`           | the clip loop, outcomes and timing (pure Python; runs against a stub app in tests) |
-| `macos.py`             | key events, BlackHole, playback, the TextEdit target, app restarts                 |
-| `score.py`             | WER, the completeness checks, `score.json`, the verifier and tables                |
-| `judge.py`             | the optional judge metrics (ZER, AMEND) and the second judge                       |
-| `report.py`            | passes, means, speaker-bootstrap intervals, the judge check's agreement            |
-| `CONFIGS.md`           | every profile's settings and reasons, the frozen protocol, the pass plan, changes  |
-| `fetch_clips.py`       | downloads the dataset (pinned revision, sha256 checked) into `clips/`              |
-| `apps/`                | one config per app and profile, one setup script per app; `common.sh` helpers      |
-| `test_*.py`, `test.sh` | offline tests                                                                      |
+| File                   | What it does                                                                           |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| `bench`, `bench.py`    | the one command (above)                                                                |
+| `harness.py`           | the clip loop, outcomes and timing (pure Python; runs against a stub app in tests)     |
+| `macos.py`             | key events, BlackHole, playback, the TextEdit target, app restarts                     |
+| `score.py`             | WER, the completeness checks, `score.json`, the verifier and tables                    |
+| `judge.py`             | the optional judge metrics (ZER, AMEND) and the second judge                           |
+| `isolation.py`         | host runs: the owner's app state set aside and restored exactly, strict prefs, signals |
+| `report.py`            | passes, means, speaker-bootstrap intervals, the judge check's agreement                |
+| `CONFIGS.md`           | every profile's settings and reasons, the frozen protocol, the pass plan, changes      |
+| `fetch_clips.py`       | downloads the dataset (pinned revision, sha256 checked) into `clips/`                  |
+| `apps/`                | one config per app and profile, one setup script per app; `common.sh` helpers          |
+| `test_*.py`, `test.sh` | offline tests                                                                          |
 
 `clips/`, `out/` (per-clip results with transcripts), `.judge-cache/` and `work/` are git-ignored.
 

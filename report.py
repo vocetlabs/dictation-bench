@@ -94,6 +94,33 @@ def bootstrap(a: dict, b: dict | None, speakers: dict[str, str], metric: str, n:
     return out
 
 
+def check_comparable(runs: list[dict], speakers: dict[str, str]) -> list[str]:
+    """Why these runs can't be pooled or ranked together: another protocol, manifest, dataset or machine, a
+    different judge, or clips without a speaker ID (the bootstrap resamples speakers)."""
+    problems = []
+
+    def same(label, key):
+        values = {json.dumps(key(r), sort_keys=True) for r in runs}
+        if len(values) > 1:
+            problems.append(f"different {label}: {sorted(values)[:3]}")
+    same("protocol (timing)", lambda r: r["run"].get("timing"))
+    same("manifest", lambda r: r["run"].get("manifest_sha256"))
+    same("dataset", lambda r: r["run"].get("dataset"))
+    same("machine", lambda r: {k: (r["run"].get("hardware") or {}).get(k) for k in ("chip", "ram_gb", "macos_build")})
+    judged = [r for r in runs if r["judge"]]
+    if judged:
+        if len(judged) != len(runs):
+            problems.append(f"{len(runs) - len(judged)} of {len(runs)} runs have no judge file for their results")
+        jid = lambda r: {k: r["judge"]["judge"].get(k) for k in ("model", "prompt_version", "prompt_fingerprint")}  # noqa: E731
+        if len({json.dumps(jid(r), sort_keys=True) for r in judged}) > 1:
+            problems.append("different judges (model, prompt version or fingerprint)")
+    clips = {c for r in runs for c in clip_numbers(r)}
+    missing = sorted(c for c in clips if not speakers.get(c))
+    if missing:
+        problems.append(f"{len(missing)} clips have no speaker ID (e.g. {missing[:3]})")
+    return problems
+
+
 def pass_row(run: dict) -> dict:
     s, j = run["score"], run["judge"] or {}
     return {"pass": run["dir"], "wer_spoken": s.get("wer_spoken"), "wer_intended": s.get("wer_intended"),
@@ -144,25 +171,38 @@ def markdown(summary: dict, hardware: dict | None = None) -> str:
     """The results tables: shipped first, in its two groups; then the other profiles."""
     cols = ["config", "model", "passes", "wer_spoken", "wer_intended", "zer", "amend", "failure_rate", "p50_s",
             "p95_s", "peak_rss_mb", "model_mb"]
-    head = ["App (profile)", "Model", "Passes", "Spoken WER %", "Intended WER %", "ZER % (judge est.)",
-            "AMEND % (cond.)", "Failure %", "p50 s (cond.)", "p95 s (cond.)", "Peak RAM MB", "Model MB"]
-    out = []
+    head = ["App (profile)", "Model", "Passes", "Spoken WER % [95% CI]", "Intended WER % [95% CI]",
+            "ZER % (judge est.) [95% CI]", "AMEND % (clips with output)", "Failure %", "p50 s (ok clips)",
+            "p95 s (ok clips)", "Peak RAM MB", "Model MB"]
+    out = [f"{DISCLOSURE}\n"]
     order = [(p, g) for p in ("shipped", "best-asr", "local-cleanup") for g in ("raw speech", "speech + local cleanup")]
     for profile, group in order:
         rows = [c for c in summary["configs"] if c["profile"] == profile and c["group"] == group]
         if not rows:
             continue
-        rows.sort(key=lambda c: c["mean"].get("wer_spoken") if c["mean"].get("wer_spoken") is not None else 1e9)
+        pooled = lambda c: (c["ci95"].get("wer_spoken") or {}).get("value")  # noqa: E731
+        rows.sort(key=lambda c: pooled(c) if pooled(c) is not None else 1e9)
         out.append(f"### {profile}: {group}\n")
         out.append("| " + " | ".join(head) + " |\n|" + "---|" * len(head))
         for c in rows:
             m = c["mean"]
             vals = [c["config"], c["model"], len(c["passes"])]
             for k in cols[3:]:
-                ci = c["ci95"].get(k, {}).get("ci95") if k in RATIOS else None
-                vals.append(_cell(m.get(k)) + (f" [{ci[0]:.2f}, {ci[1]:.2f}]" if ci else ""))
+                if k in RATIOS:  # the pooled estimate over all passes, with its interval
+                    est = c["ci95"].get(k) or {}
+                    ci = est.get("ci95")
+                    vals.append(_cell(est.get("value")) + (f" [{ci[0]:.2f}, {ci[1]:.2f}]" if ci else ""))
+                else:  # the mean of the passes
+                    vals.append(_cell(m.get(k)))
             out.append("| " + " | ".join(str(v) for v in vals) + " |")
-        out.append("")
+        out.append(f"\n{DISCLOSURE}\n")
+    out.append("### Passes\n")
+    pcols = ["wer_spoken", "wer_intended", "zer", "amend", "failure_rate", "p50_s", "p95_s", "peak_rss_mb"]
+    out.append("| App (profile) | Pass | " + " | ".join(pcols) + " |\n|" + "---|" * (len(pcols) + 2))
+    for c in summary["configs"]:
+        for p in c["passes"]:
+            out.append(f"| {c['config']} | {p['pass']} | " + " | ".join(_cell(p.get(k)) for k in pcols) + " |")
+    out.append(f"\n{DISCLOSURE}\n")
     if summary["comparisons"]:
         out.append("### Paired differences (95% speaker bootstrap)\n")
         out.append("| Metric | Profile / group | A | B | A - B | 95% interval | |\n|---|---|---|---|---|---|---|")
@@ -170,13 +210,13 @@ def markdown(summary: dict, hardware: dict | None = None) -> str:
             ci = d["ci95"]
             out.append(f"| {d['metric']} | {d['profile']} / {d['group']} | {d['a']} | {d['b']} | {_cell(d['value'])} | "
                        + (f"[{ci[0]:.2f}, {ci[1]:.2f}]" if ci else "-") + f" | {'resolved' if d['resolved'] else 'unresolved'} |")
-        out.append("")
+        out.append(f"\n{DISCLOSURE}\n")
     if hardware:
         out.append("Hardware: " + ", ".join(f"{k} {v}" for k, v in hardware.items() if k != "load") + "\n")
-    out.append("Means over passes; intervals resample speakers (all of a speaker's clips together). ZER and AMEND are "
-               "judge estimates; AMEND and latency are over clips with output (conditional): read them with the failure "
-               "rate. Latency: release of the key to the final text.\n")
-    out.append(DISCLOSURE)
+    out.append("WER and ZER: pooled over all passes, with 95% intervals that resample speakers (all of a speaker's clips "
+               "together). Other columns: the mean of the passes. ZER and AMEND are judge estimates; AMEND is over clips "
+               "with output and latency over ok clips (conditional): read them with the failure rate. Latency: release "
+               "of the key to the final text.\n")
     return "\n".join(out) + "\n"
 
 

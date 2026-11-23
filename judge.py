@@ -502,7 +502,10 @@ def judge_run(run_dir: pathlib.Path, manifest: pathlib.Path, key: str = "", *, b
                              if failed else "a sample" if only is not None else "a limited run") + ": no headline"
     else:
         out["zer"] = round(100 * sum(c["zero_edit"] for c in judged) / len(judged), 1) if judged else None
-        out["amend"] = round(100 * sum(c["edits"] for c in judged) / max(1, sum(c["chars"] for c in judged)), 2)
+        # AMEND is conditional: pooled over clips with output only (a clip with no output gets no ZER credit
+        # above, and the failure rate shows it); ZER keeps every clip.
+        outputs = [c for c in judged if c["status"] in sc.SCORED_TEXT]
+        out["amend"] = round(100 * sum(c["edits"] for c in outputs) / max(1, sum(c["chars"] for c in outputs)), 2)
     log(f"judge: {len(judged)}/{len(per_clip)} judged, {out['calls']} asked"
         + (f", ZER {out['zer']} AMEND {out['amend']}" if "zer" in out else f", {out['incomplete']}"))
     return out

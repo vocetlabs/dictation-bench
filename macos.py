@@ -108,11 +108,24 @@ class CoreAudio:
         return out
 
     def find_input(self, device: str) -> int:
+        """The input device with exactly this name."""
         inputs = self.inputs()
-        hit = [d for n, d in inputs.items() if device.lower() in n.lower()]
-        if not hit:
-            raise SystemExit(f"no input device '{device}' (inputs: {list(inputs)})")
-        return hit[0]
+        if device not in inputs:
+            raise SystemExit(f"no input device named '{device}' (inputs: {list(inputs)})")
+        return inputs[device]
+
+    def capturing_pids(self) -> set[int] | None:
+        """PIDs of the processes capturing audio input now (macOS 14+ process objects); None if unknown."""
+        a, size = self.addr("prs#"), ctypes.c_uint32(0)
+        if self.ca.AudioObjectGetPropertyDataSize(1, ctypes.byref(a), 0, None, ctypes.byref(size)):
+            return None
+        objs = (ctypes.c_uint32 * (size.value // 4))()
+        if self.ca.AudioObjectGetPropertyData(1, ctypes.byref(a), 0, None, ctypes.byref(size), objs):
+            return None
+        try:
+            return {self.u32(o, "ppid") for o in objs if self.u32(o, "piri")}
+        except OSError:
+            return None
 
     def default_input_name(self) -> str:
         return self.name(self.u32(1, "dIn "))
@@ -164,9 +177,18 @@ class BlackHoleDriver(Driver):
 
     def mic_open(self) -> bool | None:
         try:
-            return self.ca.running_somewhere(self.bh_in)
+            if not self.ca.running_somewhere(self.bh_in):
+                return False
         except OSError as e:
             raise InfraError("err_ready", str(e)) from e
+        pids = self.ca.capturing_pids()
+        if pids is not None:  # only the app under test may be recording
+            others = pids - process_tree_pids(self.app.process)
+            if others:
+                raise InfraError("err_ready", f"another process is capturing audio (pid {sorted(others)})")
+            if not pids:
+                return False
+        return True
 
     def play(self, clip: Clip) -> float:
         self.error = None
@@ -213,22 +235,43 @@ class BlackHoleDriver(Driver):
         return process_tree_rss_mb(self.app.process)
 
 
-def process_tree_rss_mb(name: str) -> float | None:
-    """Resident memory of the processes named `name` and all their descendants (helpers, model servers)."""
+def _procs() -> list[tuple[int, int, int, str]]:
     out = subprocess.run(["ps", "-axo", "pid=,ppid=,rss=,comm="], capture_output=True, text=True).stdout
     procs = []
     for line in out.splitlines():
         parts = line.split(None, 3)
         if len(parts) == 4 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit():
             procs.append((int(parts[0]), int(parts[1]), int(parts[2]), os.path.basename(parts[3])))
+    return procs
+
+
+def process_tree(procs, name: str) -> set[int]:
+    """PIDs of the processes named `name` and all their descendants (helpers, model servers)."""
     tree = {p for p, _, _, comm in procs if comm == name}
-    if not tree:
-        return None
-    grew = True
+    grew = bool(tree)
     while grew:
         more = {p for p, pp, _, _ in procs if pp in tree} - tree
         grew, tree = bool(more), tree | more
-    return sum(rss for p, _, rss, _ in procs if p in tree) / 1024
+    return tree
+
+
+def process_tree_pids(name: str) -> set[int]:
+    return process_tree(_procs(), name)
+
+
+def process_tree_rss_mb(name: str) -> float | None:
+    procs = _procs()
+    tree = process_tree(procs, name)
+    return sum(rss for p, _, rss, _ in procs if p in tree) / 1024 if tree else None
+
+
+def apps_dir() -> pathlib.Path:
+    """Where the bench installs apps: its own folder, never /Applications (the owner's copies stay put)."""
+    return pathlib.Path(os.environ.get("BENCH_APPS") or pathlib.Path(__file__).resolve().parent / "work" / "Applications")
+
+
+def bundle(app: App) -> pathlib.Path:
+    return apps_dir() / pathlib.Path(app.app_path).name
 
 
 def restart_app(app: App, settle: float = 10.0) -> None:
@@ -240,7 +283,7 @@ def restart_app(app: App, settle: float = 10.0) -> None:
         time.sleep(0.2)
     else:
         subprocess.run(["pkill", "-KILL", "-x", app.process], check=False)
-    subprocess.run(["open", "-g", os.path.expanduser(app.app_path)], check=False)
+    subprocess.run(["open", "-g", str(bundle(app))], check=False)
     time.sleep(settle)
 
 
@@ -257,8 +300,14 @@ class TextEditTarget(Target):
         if not scratch.exists():  # never rewritten while open: TextEdit would report a conflicting change
             scratch.write_text("")
         self.app = self.window = self.area = None
-        subprocess.run(["pkill", "-x", "TextEdit"], check=False)
-        time.sleep(1)
+        # Never quit TextEdit: it may hold the owner's documents. It must be closed, or show only this one.
+        if self.AK.NSRunningApplication.runningApplicationsWithBundleIdentifier_(TEXTEDIT):
+            _, wins = self._get(self._app(), "AXWindows")
+            others = [str(self._get(w, "AXTitle")[1] or "") for w in wins or []]
+            others = [t for t in others if not t.startswith(scratch.name)]
+            if others:
+                raise SystemExit(f"TextEdit has other documents open ({len(others)}): save and quit it first; "
+                                 "the bench uses its own scratch document")
         subprocess.run(["open", "-F", "-a", "TextEdit", str(scratch)], check=False)
 
     def _get(self, el, attr):
@@ -364,12 +413,12 @@ def preflight(app: App) -> dict:
 
 def binary_path(app: App) -> pathlib.Path | None:
     import plistlib
-    bundle = pathlib.Path(os.path.expanduser(app.app_path))
+    b = bundle(app)
     try:
-        info = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes())
+        info = plistlib.loads((b / "Contents" / "Info.plist").read_bytes())
     except OSError:
         return None
-    exe = bundle / "Contents" / "MacOS" / info.get("CFBundleExecutable", "")
+    exe = b / "Contents" / "MacOS" / info.get("CFBundleExecutable", "")
     return exe if exe.is_file() else None
 
 
@@ -416,19 +465,30 @@ def vm_running() -> bool:
 
 
 def save_machine_state() -> dict:
-    """What `bench machine` changes: the default input and the Mac-wide text corrections."""
-    return {"input": CoreAudio().default_input_name(),
-            "defaults": {k: _out("defaults", "read", "-g", k) or None for k in TEXT_CORRECTIONS}}
+    """What `bench machine` changes: the default input (exact name) and the Mac-wide text corrections,
+    read strictly (a failed read stops the run instead of counting as absent)."""
+    from isolation import read_pref
+    return {"input": CoreAudio().default_input_name(), "defaults": {k: read_pref(k) for k in TEXT_CORRECTIONS}}
 
 
-def restore_machine_state(state: dict) -> None:
+def restore_machine_state(state: dict) -> list[str]:
+    """Puts the input and the text corrections back, then reads both back; returns what still differs."""
+    from isolation import RestoreError, read_pref, write_bool_pref
+    problems = []
     for k, v in state["defaults"].items():
-        if v is None:
-            subprocess.run(["defaults", "delete", "-g", k], capture_output=True)
-        else:
-            subprocess.run(["defaults", "write", "-g", k, "-bool", "true" if v in ("1", "true") else "false"])
+        try:
+            write_bool_pref(k, v)
+            if (read_pref(k) is None) != (v is None) or (v is not None and read_pref(k) != v):
+                problems.append(f"{k} reads back as {read_pref(k)!r}, was {v!r}")
+        except RestoreError as e:
+            problems.append(str(e))
     try:
         ca = CoreAudio()
         ca.set_default_input(ca.find_input(state["input"]))
-    except Exception as e:  # noqa: BLE001: tell the person, don't hide the run's own result
-        print(f"host-run: set the input back to '{state['input']}' in System Settings > Sound ({e})", file=sys.stderr)
+        if ca.default_input_name() != state["input"]:
+            problems.append(f"the default input is {ca.default_input_name()!r}, was {state['input']!r}")
+    except (SystemExit, OSError) as e:
+        problems.append(f"the default input: {e}")
+    for p in problems:
+        print(f"host-run: NOT RESTORED: {p}", file=sys.stderr)
+    return problems

@@ -34,5 +34,19 @@
     "transcription": "local",
     "hotkey": "RightAlt",
     "share_usage_events": false
+  },
+  "state": {
+    "paths": [
+      "~/Library/Application Support/com.dictationapp.desktop",
+      "~/Library/Logs/com.dictationapp.desktop",
+      "~/Library/Caches/com.dictationapp.desktop",
+      "~/Library/WebKit/com.dictationapp.desktop"
+    ],
+    "defaults": [
+      "com.dictationapp.desktop"
+    ]
+  },
+  "settings_source": {
+    "file": "~/Library/Application Support/com.dictationapp.desktop/settings.json"
   }
 }

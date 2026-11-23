@@ -12,14 +12,13 @@
     "commit": "9912eca0d9"
   },
   "model": {
-    "id": "Cohere Transcribe (6-bit), English selected",
-    "size_mb": 1577,
-    "backend": "Core ML",
+    "id": "Whisper Large",
+    "backend": "whisper (FluidVoice)",
     "files": []
   },
   "language": "en",
   "cleanup": "off",
-  "notes": "Maintainer-recommended local ASR for accuracy: the highest accuracy rating in FluidVoice's model list (accuracyPercent 0.98, shared with Fluid Speech Pro), language set to English as the app asks. Alternative English-only pick: Parakeet TDT v2 (0.96, 'Higher Accuracy'). Cleanup off.",
+  "notes": "Maintainer-recommended local ASR for accuracy: FluidVoice's model list rates Whisper Large and Qwen3 ASR 1.7B highest (accuracyPercent 1.00, above Cohere Transcribe 0.98); Whisper Large is the one it describes as 'Best possible accuracy' and comes first in its list. Cleanup off.",
   "hosted_setup": false,
   "settings_files": [
     "~/Library/Preferences/com.FluidApp.app.plist"
@@ -27,8 +26,21 @@
   "logs": "unified:FluidVoice:",
   "settings": {
     "OnboardingCompleted": true,
-    "SelectedSpeechModel": "cohere-transcribe-6bit",
-    "SelectedCohereLanguage": "en"
+    "SelectedSpeechModel": "whisper-large",
+    "EnableAIProcessing": false
   },
-  "verify": "FluidVoice downloads Cohere Transcribe itself: choose it in Settings > Voice Engine (English), then add its model folder to model.files."
+  "verify": "FluidVoice downloads Whisper Large itself: choose it in Settings > Voice Engine, check the language (English or auto), then add its model files to model.files.",
+  "state": {
+    "paths": [
+      "~/Library/Application Support/FluidAudio",
+      "~/Library/Application Support/com.FluidApp.app",
+      "~/Library/Caches/com.FluidApp.app"
+    ],
+    "defaults": [
+      "com.FluidApp.app"
+    ]
+  },
+  "settings_source": {
+    "defaults": "com.FluidApp.app"
+  }
 }

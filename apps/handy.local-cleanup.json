@@ -18,7 +18,8 @@
     "files": [
       "~/.cache/huggingface/hub/models--handy-computer--parakeet-unified-en-0.6b-gguf/snapshots/7e948f21b7bdbac698d3318db9d350f1096f3b6c/parakeet-unified-en-0.6b-Q8_0.gguf"
     ],
-    "cleanup_model": "Ollama gemma3:4b"
+    "cleanup_model": "Ollama gemma3:4b",
+    "cleanup_ollama": "gemma3:4b"
   },
   "language": "en",
   "cleanup": "on (post-processing, Ollama gemma3:4b, Handy's default prompt)",
@@ -36,7 +37,23 @@
     "post_process_provider_id": "custom",
     "post_process_models": {
       "custom": "gemma3:4b"
-    }
+    },
+    "post_process_selected_prompt_id": "default_improve_transcriptions"
   },
-  "verify": "Ollama with gemma3:4b answers at localhost:11434; Handy pastes the post-processed text on Option+Shift+Space."
+  "verify": "Ollama with gemma3:4b answers at localhost:11434; Handy pastes the post-processed text on Option+Shift+Space.",
+  "state": {
+    "paths": [
+      "~/Library/Application Support/com.pais.handy",
+      "~/Library/Logs/com.pais.handy",
+      "~/Library/Caches/com.pais.handy",
+      "~/Library/WebKit/com.pais.handy"
+    ],
+    "defaults": [
+      "com.pais.handy"
+    ]
+  },
+  "settings_source": {
+    "file": "~/Library/Application Support/com.pais.handy/settings_store.json",
+    "key": "settings"
+  }
 }

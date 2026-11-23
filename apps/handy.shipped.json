@@ -31,5 +31,20 @@
   "settings": {
     "selected_model": "handy-computer/parakeet-unified-en-0.6b-gguf/parakeet-unified-en-0.6b-Q8_0.gguf",
     "selected_language": "en"
+  },
+  "state": {
+    "paths": [
+      "~/Library/Application Support/com.pais.handy",
+      "~/Library/Logs/com.pais.handy",
+      "~/Library/Caches/com.pais.handy",
+      "~/Library/WebKit/com.pais.handy"
+    ],
+    "defaults": [
+      "com.pais.handy"
+    ]
+  },
+  "settings_source": {
+    "file": "~/Library/Application Support/com.pais.handy/settings_store.json",
+    "key": "settings"
   }
 }

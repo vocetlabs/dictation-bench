@@ -32,5 +32,20 @@
     "selected_model": "handy-computer/Qwen3-ASR-1.7B-gguf/Qwen3-ASR-1.7B-Q8_0.gguf",
     "selected_language": "en"
   },
-  "verify": "Handy's 'More accurate' pick for English in its model picker is Qwen3-ASR 1.7B (the bench approximates the package's recommend())."
+  "verify": "Handy's 'More accurate' pick for English in its model picker is Qwen3-ASR 1.7B (the bench approximates the package's recommend()).",
+  "state": {
+    "paths": [
+      "~/Library/Application Support/com.pais.handy",
+      "~/Library/Logs/com.pais.handy",
+      "~/Library/Caches/com.pais.handy",
+      "~/Library/WebKit/com.pais.handy"
+    ],
+    "defaults": [
+      "com.pais.handy"
+    ]
+  },
+  "settings_source": {
+    "file": "~/Library/Application Support/com.pais.handy/settings_store.json",
+    "key": "settings"
+  }
 }

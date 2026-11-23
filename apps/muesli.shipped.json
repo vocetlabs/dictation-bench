@@ -29,5 +29,19 @@
   "logs": "unified:Muesli:",
   "settings": {
     "has_completed_onboarding": true
+  },
+  "state": {
+    "paths": [
+      "~/Library/Application Support/Muesli",
+      "~/Library/Application Support/FluidAudio",
+      "~/.cache/muesli",
+      "~/Library/Caches/com.muesli.app"
+    ],
+    "defaults": [
+      "com.muesli.app"
+    ]
+  },
+  "settings_source": {
+    "file": "~/Library/Application Support/Muesli/config.json"
   }
 }

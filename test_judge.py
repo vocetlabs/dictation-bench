@@ -115,6 +115,19 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual(str(e.exception), "HTTP 401")
 
 
+class AmendTests(unittest.TestCase):
+    setUp = JudgeTests.setUp
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_amend_is_pooled_over_clips_with_output_and_zer_counts_failures(self):
+        out = jd.judge_run(self.run, self.man, "k", tools=fake_tools(), post=Endpoint(), cache_dir=self.d / "c",
+                           backoff=0, log=lambda *_: None)
+        self.assertEqual(out["zer"], 33.3)  # c3 (empty) is not sendable
+        self.assertEqual(out["amend"], round(100 * 1 / (10 + 9), 2))  # c1 0/10 + c2 1/9; c3's 5 chars left out
+
+
 class SecondJudgeTests(unittest.TestCase):
     setUp = JudgeTests.setUp
 

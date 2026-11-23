@@ -29,6 +29,20 @@
   "logs": "unified:FluidVoice:",
   "settings": {
     "OnboardingCompleted": true,
-    "SelectedSpeechModel": "parakeet-tdt"
+    "SelectedSpeechModel": "parakeet-tdt",
+    "EnableAIProcessing": false
+  },
+  "state": {
+    "paths": [
+      "~/Library/Application Support/FluidAudio",
+      "~/Library/Application Support/com.FluidApp.app",
+      "~/Library/Caches/com.FluidApp.app"
+    ],
+    "defaults": [
+      "com.FluidApp.app"
+    ]
+  },
+  "settings_source": {
+    "defaults": "com.FluidApp.app"
   }
 }

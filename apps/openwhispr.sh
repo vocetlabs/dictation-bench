@@ -21,13 +21,13 @@ tar -xjf "$tmp/model.tar.bz2" -C "$tmp"
 mkdir -p "$models" && rm -rf "${models:?}/$name"
 mv "$tmp/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming" "$models/$name"
 port=9229
-open -g /Applications/OpenWhispr.app --args --remote-debugging-port=$port
+open -g "$APPS/OpenWhispr.app" --args --remote-debugging-port=$port
 sleep 15
 uv run --quiet "$(dirname "$0")/cdp_eval.py" $port \
   'localStorage.setItem("onboardingCompleted","true"); localStorage.setItem("useLocalWhisper","true"); localStorage.setItem("localTranscriptionProvider","nvidia"); localStorage.setItem("parakeetModel","parakeet-unified-en-0.6b"); localStorage.setItem("dictationKey","RightOption"); "ok"'
 pkill -TERM -x OpenWhispr || true
 sleep 5
 # Debug-level logging, so a failed smoke test shows why (its audio is only the synthetic sentence).
-open -g --env OPENWHISPR_LOG_LEVEL=debug /Applications/OpenWhispr.app
+open -g --env OPENWHISPR_LOG_LEVEL=debug "$APPS/OpenWhispr.app"
 for _ in $(seq 1 60); do pgrep -x OpenWhispr >/dev/null && break; sleep 1; done
 sleep 15

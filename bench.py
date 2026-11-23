@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -116,10 +117,23 @@ def machine(ci: bool) -> None:
     print(f"default input: {ca.default_input_name()}; automatic corrections off")
 
 
-def setup(name: str, ci: bool) -> None:
+def owner_state(app: hn.App) -> list[str]:
+    """The app's settings, data or preferences that exist on this Mac now (a setup would overwrite them)."""
+    import isolation
+    found = [p for p in app.state.get("paths", []) if pathlib.Path(os.path.expanduser(p)).exists()]
+    return found + [d for d in app.state.get("defaults", []) if isolation.export_domain(d) is not None]
+
+
+def setup(name: str, ci: bool, overwrite: bool = False, isolated: bool = False) -> None:
+    """Installs the app into the bench's own folder and writes its profile's settings. Outside CI and a host
+    run (which sets the owner's state aside first), it refuses to overwrite existing settings unless told."""
     app = app_config(name)
     if app.na:
         raise SystemExit(runnable(app))
+    if not (ci or overwrite or isolated) and (existing := owner_state(app)):
+        raise SystemExit(f"setting up {app.name} would overwrite this Mac's {app.base} settings or data "
+                         f"({', '.join(existing)}). Use ./bench host-run, which sets them aside and puts them back, "
+                         "or pass --overwrite on a test machine or VM.")
     script = HERE / "apps" / f"{app.base}.sh"
     if ci and not app.hosted_setup:
         raise SystemExit(f"{app.name} has no unattended setup yet (apps/{app.name}.json hosted_setup=false): local only")
@@ -162,24 +176,61 @@ def count_diff(after: dict[str, int], before: dict[str, int]) -> dict[str, int]:
     return {k: after[k] - before.get(k, 0) for k in sorted(after) if after[k] - before.get(k, 0)}
 
 
-def show_logs(app: hn.App, lines: int = 40) -> None:
-    """The tail of the app's own log, after a failed smoke test only (its audio is our synthetic
-    sentence, so nothing from the dataset can be in it)."""
+def log_health(app: hn.App) -> str:
+    """After a failed smoke test: how many lines the app logged in the last 10 minutes, and how many say
+    error or warn. Counts only: an app's log can hold earlier dictations' text."""
     import glob
     if app.logs.startswith("unified:"):  # unified:<process>[:<subsystem prefix>]
         _, proc, *sub = app.logs.split(":") + [""]
         pred = f'process == "{proc}"' + (f' AND subsystem BEGINSWITH "{sub[0]}"' if sub and sub[0] else "")
-        out = subprocess.run(["log", "show", "--last", "10m", "--style", "compact", "--info", "--debug",
-                              "--predicate", pred], capture_output=True, text=True).stdout.splitlines()
-        print("\n".join(x[:400] for x in out[-4 * lines:]), file=sys.stderr)
-        return
-    files = sorted(glob.glob(os.path.expanduser(app.logs))) if app.logs else []
-    if app.logs and not files:
-        print(f"(no log files match {app.logs})", file=sys.stderr)
-    for f in files[-2:]:
-        print(f"--- {f}", file=sys.stderr)
-        tail = pathlib.Path(f).read_text(errors="replace").splitlines()[-lines:]
-        print("\n".join(x[:300] for x in tail), file=sys.stderr)
+        lines = subprocess.run(["log", "show", "--last", "10m", "--style", "compact", "--info", "--debug",
+                                "--predicate", pred], capture_output=True, text=True).stdout.splitlines()
+    else:
+        import time
+        lines = []
+        for f in glob.glob(os.path.expanduser(app.logs)) if app.logs else []:
+            if time.time() - os.path.getmtime(f) < 600:
+                lines += pathlib.Path(f).read_text(errors="replace").splitlines()[-2000:]
+    err = sum("error" in x.lower() for x in lines)
+    warn = sum("warn" in x.lower() for x in lines)
+    return f"app log, last 10 min: {len(lines)} lines, {err} with 'error', {warn} with 'warn' (counts only)"
+
+
+def settings_problems(app: hn.App, read_pref=None) -> tuple[dict, list[str]]:
+    """The profile's declared settings as the app has them now, and what differs (BENCH2: a run is scored
+    only under the settings its label names). Also the cleanup model's digest for an Ollama profile."""
+    import isolation
+    read_pref = read_pref or isolation.read_pref
+    src, got, problems = app.settings_source, {}, []
+    if src.get("file"):
+        path = pathlib.Path(os.path.expanduser(src["file"]))
+        try:
+            data = json.loads(path.read_text())
+            data = data.get(src["key"], {}) if src.get("key") else data
+        except (OSError, ValueError) as e:
+            return {}, [f"can't read {src['file']}: {e}"]
+        for k in app.settings:
+            got[k] = data.get(k)
+    elif src.get("defaults"):
+        for k in app.settings:
+            v = read_pref(k, src["defaults"])
+            got[k] = v
+    else:
+        return {}, ([f"{app.name} has settings but no settings_source"] if app.settings else [])
+    for k, want in app.settings.items():
+        have = got.get(k)
+        if isinstance(want, bool) and isinstance(have, str):
+            have = have.strip() in ("1", "true", "YES")
+        if have != want:
+            problems.append(f"{k} is {have!r}, the profile says {want!r}")
+    if model := app.model.get("cleanup_ollama"):
+        row = next((ln.split() for ln in subprocess.run(["ollama", "list"], capture_output=True, text=True)
+                    .stdout.splitlines()[1:] if ln.split() and ln.split()[0] == model), None) \
+            if shutil.which("ollama") else None
+        got["cleanup_ollama_digest"] = row[1] if row and len(row) > 1 else None
+        if not got["cleanup_ollama_digest"]:
+            problems.append(f"the Ollama model {model} isn't installed")
+    return got, problems
 
 
 def run(a: argparse.Namespace) -> int:
@@ -189,19 +240,28 @@ def run(a: argparse.Namespace) -> int:
     if a.hotkey:
         app.hotkey, app.notes = a.hotkey, (app.notes + f" (hotkey overridden: {a.hotkey})").strip()
     return run_job(app, smoke_only=a.smoke, accuracy_only=a.accuracy_only, machine=a.machine, output=a.output,
-                   limit=a.limit, attempts=a.attempts)
+                   limit=a.limit, attempts=a.attempts, unverified_ok=a.unverified_ok)
 
 
 def run_job(app: hn.App, *, smoke_only: bool = False, accuracy_only: bool = False, machine: str = "",
             output: pathlib.Path | None = None, limit: int | None = None, attempts: int = 3,
-            seed: int | None = None, extra: dict | None = None) -> int:
+            seed: int | None = None, extra: dict | None = None, unverified_ok: bool = False) -> int:
     """The smoke dictation (the gate and the warm-up), then the clips (in a seeded order when `seed` is
     set), then the score. run.json records the app's release, model files, settings and the machine."""
     from macos import BlackHoleDriver, TextEditTarget, hardware, preflight
+    if app.verify and not unverified_ok:
+        raise SystemExit(f"{app.name} isn't verified yet ({app.verify}): verify it, clear `verify` in its "
+                         "config, or pass --unverified-ok for a trial (recorded in run.json)")
+    effective, problems = settings_problems(app)
+    artifacts = model_artifacts(app)
+    problems += [f"model file missing: {f}" for f, h in artifacts["model_sha256"].items() if h == "missing"]
+    if problems:
+        raise SystemExit(f"{app.name} doesn't have its profile's settings, so it can't be scored under that "
+                         "label:\n  " + "\n  ".join(problems))
     env = preflight(app)
     timing = hn.accuracy_only() if accuracy_only else hn.Timing()
     driver = BlackHoleDriver(app, timing)
-    target = TextEditTarget(pathlib.Path.home() / "bench" / "scratch.txt")
+    target = TextEditTarget(HERE / "work" / "scratch.txt")  # the bench's own document
     restart = hn.restarts_after_unclear(app)
     caff = subprocess.Popen(["caffeinate", "-dimsu"])
     rows: dict = {}
@@ -220,7 +280,7 @@ def run_job(app: hn.App, *, smoke_only: bool = False, accuracy_only: bool = Fals
                     break
             if not ok:
                 print("the smoke dictation failed: fix the setup before a full run", file=sys.stderr)
-                show_logs(app)
+                print(log_health(app), file=sys.stderr)
                 return 2
         if smoke_only:
             return 0
@@ -237,7 +297,8 @@ def run_job(app: hn.App, *, smoke_only: bool = False, accuracy_only: bool = Fals
                     for f in app.settings_files if pathlib.Path(os.path.expanduser(f)).exists()}
         info = {"app": asdict(app), "effective": {"binary_sha256": env["binary_sha256"], "settings_sha256": settings,
                                                   "release_sha256": app.release.get("sha256", ""),
-                                                  **model_artifacts(app)},
+                                                  "settings": effective, **artifacts},
+                "unverified": app.verify if app.verify else "",
                 "harness": hn.HARNESS_VERSION, "timing": asdict(timing), "timed": timing.timed,
                 "dataset": DATASET, "manifest_sha256": sc.digest(manifest), "machine": machine or "local",
                 "macos": env["macos"], "clip_ids": [c.clip_id for c in clips], "clip_order_seed": seed,
@@ -326,17 +387,85 @@ def host_plan(jobs: list[str], passes: int, first_pass: int = 1, seed: int = 202
             for p in range(first_pass, first_pass + passes)]
 
 
+STASH = HERE / "work" / "stash"
+
+
+def dictation_processes() -> set[str]:
+    """Every benchmarked app's process name: all of them are quit before a job, so only one can listen."""
+    return {hn.load_app(p).process for p in (HERE / "apps").glob("*.*.json")}
+
+
+def owner_bundles(processes: set[str]) -> list[str]:
+    """The app bundles of those processes running now (the owner's own copies), to reopen afterwards."""
+    out = subprocess.run(["ps", "-axo", "comm="], capture_output=True, text=True).stdout.splitlines()
+    found = []
+    for exe in out:
+        if os.path.basename(exe) in processes and ".app/" in exe:
+            b = exe[:exe.index(".app/") + 4]
+            if b not in found and not b.startswith(str(HERE)):
+                found.append(b)
+    return found
+
+
+def quit_all(processes: set[str]) -> None:
+    from isolation import wait_gone
+    for name in processes:
+        subprocess.run(["pkill", "-TERM", "-x", name], capture_output=True)
+    for name in processes:
+        if not wait_gone(name):
+            subprocess.run(["pkill", "-KILL", "-x", name], capture_output=True)
+            if not wait_gone(name, 5):
+                raise SystemExit(f"{name} won't quit: stopping before anything is changed")
+
+
+def app_state(app: hn.App):
+    from isolation import AppState
+    return AppState(app.base, app.state.get("paths", []), app.state.get("defaults", []), STASH / app.base)
+
+
+def restore_host() -> int:
+    """After a host run that didn't finish: put every app's state and the machine settings back."""
+    from isolation import AppState, RestoreError
+    bad = 0
+    for m in sorted(STASH.glob("*/manifest.json")):
+        try:
+            AppState(m.parent.name, [], [], m.parent).restore()
+            print(f"restored {m.parent.name}")
+        except (RestoreError, OSError) as e:
+            bad += 1
+            print(f"NOT restored {m.parent.name}: {e}", file=sys.stderr)
+    machine_file = STASH / "machine.json"
+    if machine_file.exists():
+        from macos import restore_machine_state
+        if restore_machine_state(json.loads(machine_file.read_text())):
+            bad += 1
+        else:
+            machine_file.unlink()
+            print("restored the input device and text corrections")
+    return 1 if bad else 0
+
+
 def host_run(a: argparse.Namespace) -> int:
-    """Passes of app:profile jobs on this Mac (BENCH2): each pass in its own folder, the warm-up smoke
-    dictation first, the machine's input and text corrections restored at the end, the machine recorded."""
+    """Passes of app:profile jobs on the owner's Mac (BENCH2). Nothing of the owner's is deleted or
+    overwritten: apps go into the bench's own folder; for each job every benchmarked app is quit, the
+    selected app's settings, data and models are moved aside and put back exactly afterwards (checked), and
+    the input device and text corrections are restored and checked; SIGTERM and SIGHUP restore too."""
     from datetime import datetime
+    from isolation import on_termination
     from macos import hardware, restore_machine_state, save_machine_state, vm_running
     jobs = [config_name(j) for j in a.jobs.split(",") if j]
     for j in jobs:
-        if why := runnable(app_config(j)):
+        app = app_config(j)
+        if why := runnable(app):
             raise SystemExit(why)
+        if not app.state.get("paths") and not app.state.get("defaults"):
+            raise SystemExit(f"{app.name} declares no `state` to set aside: not run on a host")
+        if app.verify and not a.unverified_ok:
+            raise SystemExit(f"{app.name} isn't verified yet ({app.verify}); pass --unverified-ok for a trial")
     if vm_running():
         raise SystemExit("a virtual machine is running: stop it before a host run (timed numbers)")
+    if list(STASH.glob("*/manifest.json")) or (STASH / "machine.json").exists():
+        raise SystemExit("an earlier host run didn't finish: run `./bench restore-host` first")
     out = a.out or HERE / "out" / "host" / datetime.now().strftime("%Y%m%d-%H%M")
     out.mkdir(parents=True, exist_ok=True)
     plan = host_plan(jobs, a.passes, a.first_pass, a.seed)
@@ -344,36 +473,55 @@ def host_run(a: argparse.Namespace) -> int:
     write = lambda: (out / "host.json").write_text(json.dumps(log, indent=1) + "\n")  # noqa: E731
     write()
     print(f"host run -> {out}: {len(plan)} passes of {', '.join(jobs)}; load {log['hardware_start']['load']}")
+    procs = dictation_processes()
+    reopen = owner_bundles(procs)
+    STASH.mkdir(parents=True, exist_ok=True)
     state = save_machine_state()
+    (STASH / "machine.json").write_text(json.dumps(state))
+    on_termination()
+    problems: list[str] = []
     try:
+        quit_all(procs)  # the owner's copies too; reopened at the end
         machine(False)
         for step in plan:
             for name in step["order"]:
                 app = app_config(name)
                 entry = {"pass": step["pass"], "config": name, "load_before": hardware()["load"]}
+                quit_all(procs)
+                st = app_state(app)
+                st.save()
                 try:
-                    if not a.no_setup:
-                        setup(name, False)
+                    setup(name, False, isolated=True)
                     entry["exit"] = run_job(app, machine=a.machine, output=out / f"pass{step['pass']}" / name,
-                                            seed=step["seed"], extra={"host_run": {"pass": step["pass"]}})
+                                            seed=step["seed"], extra={"host_run": {"pass": step["pass"]}},
+                                            unverified_ok=a.unverified_ok)
                 except (subprocess.CalledProcessError, SystemExit) as e:
-                    entry["exit"], entry["error"] = 1, str(e)[:200]
+                    entry["exit"], entry["error"] = 1, str(e)[:300]
+                    if "signal" in str(e):
+                        raise
+                finally:
+                    quit_all(procs)
+                    st.restore()
                 entry["load_after"] = hardware()["load"]
                 log["jobs"].append(entry)
                 write()
     finally:
-        restore_machine_state(state)
-        log["hardware_end"] = hardware()
+        problems = restore_machine_state(state)
+        if not problems:
+            (STASH / "machine.json").unlink(missing_ok=True)
+        for b in reopen:
+            subprocess.run(["open", "-g", b], capture_output=True)
+        log["hardware_end"], log["not_restored"] = hardware(), problems
         write()
     failed = [j for j in log["jobs"] if j.get("exit")]
     print(f"host run done: {len(log['jobs']) - len(failed)}/{len(log['jobs'])} jobs scored; then: ./bench judge "
           f"<run> and ./bench report {out}/pass*/*")
-    return 1 if failed else 0
+    return 1 if failed or problems else 0
 
 
 def speakers() -> dict[str, str]:
     man = HERE / "clips" / "manifest.csv"
-    return {r["clip_id"]: r.get("speaker_id") or r["clip_id"] for r in sc.read_csv(man)} if man.exists() else {}
+    return {r["clip_id"]: r.get("speaker_id") or "" for r in sc.read_csv(man)} if man.exists() else {}
 
 
 def report_cmd(dirs: list[pathlib.Path], as_json: bool, resamples: int, seed: int) -> int:
@@ -381,7 +529,10 @@ def report_cmd(dirs: list[pathlib.Path], as_json: bool, resamples: int, seed: in
     runs = [rp.load_run(d) for d in dirs if (d / "score.json").exists()]
     if not runs:
         raise SystemExit("no scored runs (folders with score.json)")
-    summary = rp.summarize(runs, speakers(), resamples, seed)
+    spk = speakers()
+    if problems := rp.check_comparable(runs, spk):
+        raise SystemExit("these runs can't be pooled or ranked together:\n  " + "\n  ".join(problems))
+    summary = rp.summarize(runs, spk, resamples, seed)
     host = next((json.loads(h.read_text()) for d in dirs for h in (d.parent.parent / "host.json",) if h.exists()), None)
     hw = (host or {}).get("hardware_start") or runs[0]["run"].get("hardware")
     print(json.dumps({**summary, "hardware": hw}, indent=1) if as_json else rp.markdown(summary, hw))
@@ -456,6 +607,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("setup")
     s.add_argument("--app", required=True)
     s.add_argument("--ci", action="store_true")
+    s.add_argument("--overwrite", action="store_true", help="a test machine or VM: replace the app's settings")
     r = sub.add_parser("run")
     r.add_argument("--app", required=True)
     g = r.add_mutually_exclusive_group(required=True)
@@ -467,6 +619,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--limit", type=int, help="first N clips only (a trial; scores only those)")
     r.add_argument("--attempts", type=int, default=3, help="tries per clip for infrastructure faults")
     r.add_argument("--hotkey", help="override the app's key (recorded in run.json)")
+    r.add_argument("--unverified-ok", action="store_true", help="a trial with a profile still to verify")
     sc_ = sub.add_parser("score")
     sc_.add_argument("run_dir", type=pathlib.Path)
     j = sub.add_parser("judge")
@@ -491,7 +644,8 @@ def main(argv: list[str] | None = None) -> int:
     h.add_argument("--seed", type=int, default=2026, help="clip order: seed + pass, the same for every app")
     h.add_argument("--machine", default=os.environ.get("BENCH_MACHINE", "owner-mac"))
     h.add_argument("--out", type=pathlib.Path)
-    h.add_argument("--no-setup", action="store_true", help="the apps are already set up for these profiles")
+    h.add_argument("--unverified-ok", action="store_true", help="a trial with profiles still to verify")
+    sub.add_parser("restore-host", help="after an unfinished host run: put the apps' state and machine back")
     rp_ = sub.add_parser("report", help="passes, means and speaker-bootstrap intervals (markdown)")
     rp_.add_argument("runs", nargs="+", type=pathlib.Path)
     rp_.add_argument("--json", action="store_true")
@@ -513,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
         machine(a.ci)
         return 0
     if a.cmd == "setup":
-        setup(a.app, a.ci)
+        setup(a.app, a.ci, overwrite=a.overwrite)
         return 0
     if a.cmd == "run":
         return run(a)
@@ -531,6 +685,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "host-run":
         return host_run(a)
+    if a.cmd == "restore-host":
+        return restore_host()
     if a.cmd == "report":
         return report_cmd(a.runs, a.json, a.resamples, a.seed)
     if a.cmd == "judge-check":
