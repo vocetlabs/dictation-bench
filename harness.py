@@ -39,7 +39,9 @@ from datetime import datetime, timezone
 HARNESS_VERSION = "2"
 
 FIELDS = ["clip_id", "status", "attempts", "transcript", "audio_s", "speech_end_s", "ready_s", "e2t_s",
-          "post_stop_s", "first_text_s", "error", "run_at"]
+          "post_stop_s", "first_text_s", "error", "run_at", "raw_draft", "cleanup"]
+# raw_draft and cleanup: an eval build's own record of the clip (App.drafts), empty otherwise. Like the
+# transcript, they stay in the local results.csv: nothing uploads it.
 APP_OUTCOMES = ("ok", "partial", "empty", "late")
 INFRA_ERRORS = ("err_target", "err_read", "err_audio", "err_ready")
 
@@ -136,6 +138,8 @@ class App:
     logs: str = ""                                # the app's log files (glob), shown when the smoke test fails
     log_counts: str = ""                          # a regex with one group: its values in the app's log are
                                                   #   counted over the run (numbers only, never the lines)
+    drafts: str = ""                              # an eval build's drafts file (JSON lines with raw, final,
+                                                  #   cleanup; Vocet's eval-capture): per clip into results.csv
 
     def __post_init__(self) -> None:
         parse_hotkey(self.hotkey)
@@ -391,8 +395,39 @@ def fmt(v) -> str:
     return "" if v is None else str(v)
 
 
+class Drafts:
+    """An eval build's drafts file: one JSON line per dictation, appended by the app. The harness notes
+    where the file ends before a clip and reads the last complete line written after that."""
+
+    def __init__(self, path: pathlib.Path) -> None:
+        self.path = path
+
+    def mark(self) -> int:
+        try:
+            return self.path.stat().st_size
+        except OSError:
+            return 0
+
+    def since(self, offset: int) -> dict:
+        try:
+            with self.path.open("rb") as fh:
+                fh.seek(offset)
+                new = fh.read()
+        except OSError:
+            return {}
+        for line in reversed(new.split(b"\n")):
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue  # a torn or partial line
+            if isinstance(rec, dict):
+                return rec
+        return {}
+
+
 def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, timing: Timing, out: pathlib.Path,
-            *, run: dict, restart_after_ambiguous: bool, attempts: int = 3, log=None) -> dict[str, dict]:
+            *, run: dict, restart_after_ambiguous: bool, attempts: int = 3, log=None,
+            drafts: Drafts | None = None) -> dict[str, dict]:
     """Runs the clips into out/results.csv, with out/run.json describing the run (`run`, which must carry
     a "fingerprint"). A rerun resumes only with the same fingerprint, and keeps only rows of these clips.
     App outcomes are final; infrastructure faults are retried. Returns the rows by clip_id."""
@@ -411,8 +446,9 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
     for i, clip in enumerate(clips, 1):
         if rows.get(clip.clip_id, {}).get("status") in APP_OUTCOMES:
             continue
-        res, tries = Result("err_target", error="not run"), 0
+        res, tries, mark = Result("err_target", error="not run"), 0, 0
         for tries in range(1, attempts + 1):
+            mark = drafts.mark() if drafts else 0  # the last attempt's record is the clip's
             try:
                 res = run_clip(clip, driver, target, clock, timing)
             except InfraError as e:
@@ -429,6 +465,9 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
             "audio_s": round(clip.audio_s, 3), "speech_end_s": fmt(res.speech_end_s), "ready_s": fmt(res.ready_s),
             "e2t_s": fmt(res.e2t_s), "post_stop_s": fmt(res.post_stop_s), "first_text_s": fmt(res.first_text_s),
             "error": res.error, "run_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        if drafts:
+            rec = drafts.since(mark)
+            rows[clip.clip_id].update(raw_draft=str(rec.get("raw") or ""), cleanup=str(rec.get("cleanup") or ""))
         write_rows(rows_path, rows)
         log(f"[{i}/{len(clips)}] {clip.clip_id} {res.status} tries={tries} e2t={fmt(res.e2t_s)} "
             f"chars={len(res.transcript)} {res.error}")
@@ -461,6 +500,7 @@ class StubApp:
     never_opens: bool = False
     paste_in_chunks: int = 1
     streaming: bool = False
+    drafts: pathlib.Path | None = None  # an eval build: one JSON line per paste, its raw draft "um " + text
     pressed_at: float | None = None
     played: tuple[float, float, Clip] | None = None
     pending: list[tuple[float, str]] = field(default_factory=list)
@@ -489,6 +529,9 @@ class StubApp:
             step = math.ceil(len(out) / n)
             for i in range(n):
                 self.pending.append((now + self.latency + i * 0.1, out[:step * (i + 1)]))
+            if self.drafts:
+                with self.drafts.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"raw": "um " + out, "final": out, "cleanup": "applied"}) + "\n")
         self.played = None
 
     def mic_open(self) -> bool:

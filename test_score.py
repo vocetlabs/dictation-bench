@@ -73,6 +73,19 @@ class ScoreRunTests(unittest.TestCase):
         self.assertNotIn("transcript", json.dumps(s["per_clip"]))
         self.assertNotIn("Bob", json.dumps(s))  # numbers only
 
+    def test_raw_drafts_get_their_own_wer_and_stay_numbers(self):
+        rows = self.good()
+        rows[0]["raw_draft"] = "um hello bob"   # 1 insertion against both references
+        rows[1]["raw_draft"] = "run make now"   # spoken exactly; intended has no "now"
+        self.write(rows)
+        s = sc.score_run(self.run, self.man)
+        self.assertEqual(s["raw_drafts"], 2)
+        self.assertEqual((s["wer_raw_spoken"], s["wer_raw_intended"]), (20.0, 50.0))  # 1/5 and 2/4 words
+        self.assertEqual(sc.verify(s), [])
+        self.assertNotIn("hello", json.dumps(s).lower())
+        self.write(self.good())  # no drafts: no raw numbers at all
+        self.assertNotIn("wer_raw_intended", sc.score_run(self.run, self.man))
+
     def test_a_missing_clip_is_refused_not_scored_as_a_subset(self):
         self.write(self.good()[:2])
         with self.assertRaisesRegex(sc.Incomplete, "1 missing"):

@@ -103,10 +103,14 @@ def score_run(run_dir: pathlib.Path, manifest: pathlib.Path) -> dict:
         hyp = words(r["transcript"]) if r["status"] in SCORED_TEXT else []
         ri, rs = words(m["intended_text"]), words(m["spoken_text"])
         counts[r["status"]] += 1
-        per_clip.append({"clip_id": r["clip_id"], "status": r["status"],
-                         "intended_edits": edit_distance(ri, hyp), "intended_words": len(ri),
-                         "spoken_edits": edit_distance(rs, hyp), "spoken_words": len(rs),
-                         "e2t_s": _f(r.get("e2t_s")), "post_stop_s": _f(r.get("post_stop_s"))})
+        c = {"clip_id": r["clip_id"], "status": r["status"],
+             "intended_edits": edit_distance(ri, hyp), "intended_words": len(ri),
+             "spoken_edits": edit_distance(rs, hyp), "spoken_words": len(rs),
+             "e2t_s": _f(r.get("e2t_s")), "post_stop_s": _f(r.get("post_stop_s"))}
+        if r.get("raw_draft"):  # an eval build's speech draft before cleanup: numbers only, like the rest
+            raw = words(r["raw_draft"])
+            c.update(raw_intended_edits=edit_distance(ri, raw), raw_spoken_edits=edit_distance(rs, raw))
+        per_clip.append(c)
     out = {"scorer": SCORER_VERSION, "fingerprint": run["fingerprint"], "app": run.get("app", {}),
            "effective": run.get("effective", {}), "machine": run.get("machine", ""), "timed": run.get("timed"),
            "dataset": run.get("dataset", {}), "results_sha256": digest(run_dir / "results.csv"),
@@ -131,6 +135,12 @@ def totals(per_clip: list[dict], timed: bool) -> dict:
         w = sum(c[f"{key}_words"] for c in per_clip)
         t[f"wer_{key}"] = round(100 * e / w, 2) if w else None
         t[f"{key}_edits"], t[f"{key}_words"] = e, w
+    drafted = [c for c in per_clip if "raw_intended_edits" in c]
+    if drafted:  # WER of the speech drafts before cleanup, over the clips that have one
+        for key in ("intended", "spoken"):
+            w = sum(c[f"{key}_words"] for c in drafted)
+            t[f"wer_raw_{key}"] = round(100 * sum(c[f"raw_{key}_edits"] for c in drafted) / w, 2) if w else None
+        t["raw_drafts"] = len(drafted)
     n = len(per_clip)
     t["failure_rate"] = round(100 * sum(c["status"] != "ok" for c in per_clip) / n, 1) if n else None
     if timed:
