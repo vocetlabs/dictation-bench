@@ -103,6 +103,26 @@ class SummaryTests(unittest.TestCase):
         self.assertTrue(any("judges" in p for p in problems))
         self.assertTrue(any("speaker" in p for p in problems))
 
+    def test_harness_binary_machine_label_clip_selection_and_trials_block_pooling(self):
+        def fresh():
+            runs = self.runs()
+            for r in runs:
+                r["run"].update(harness="2", machine="owner-mac", clip_ids=["c1", "c2"],
+                                effective={"binary_sha256": "b-" + r["config"], "settings": {}})
+                if r["judge"]:
+                    r["judge"]["judge"] = {"model": "j", "prompt_version": "v1", "prompt_fingerprint": "f"}
+            return runs
+        self.assertEqual(rp.check_comparable(fresh(), SPEAKERS), [])
+        cases = {"harness version": lambda rs: rs[0]["run"].update(harness="3"),
+                 "machine label": lambda rs: rs[0]["run"].update(machine="ci"),
+                 "clip selection": lambda rs: rs[0]["run"].update(clip_ids=["c1"]),
+                 "passes differ": lambda rs: rs[1]["run"]["effective"].update(binary_sha256="other"),
+                 "not reportable": lambda rs: rs[0]["run"].update(unverified="check it")}
+        for want, change in cases.items():
+            rs = fresh()
+            change(rs)
+            self.assertTrue(any(want in p for p in rp.check_comparable(rs, SPEAKERS)), want)
+
     def test_load_run_takes_the_judge_that_judged_these_results(self):
         with tempfile.TemporaryDirectory() as d:
             d = pathlib.Path(d)

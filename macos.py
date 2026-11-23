@@ -176,19 +176,7 @@ class BlackHoleDriver(Driver):
         return self.keys.tap() if self.app.mode == "toggle" else self.keys.down()
 
     def mic_open(self) -> bool | None:
-        try:
-            if not self.ca.running_somewhere(self.bh_in):
-                return False
-        except OSError as e:
-            raise InfraError("err_ready", str(e)) from e
-        pids = self.ca.capturing_pids()
-        if pids is not None:  # only the app under test may be recording
-            others = pids - process_tree_pids(self.app.process)
-            if others:
-                raise InfraError("err_ready", f"another process is capturing audio (pid {sorted(others)})")
-            if not pids:
-                return False
-        return True
+        return mic_decision(self.ca.capturing_pids(), bundle_pids(self.app))
 
     def play(self, clip: Clip) -> float:
         self.error = None
@@ -232,7 +220,8 @@ class BlackHoleDriver(Driver):
             restart_app(self.app)
 
     def rss_mb(self) -> float | None:
-        return process_tree_rss_mb(self.app.process)
+        pids = bundle_pids(self.app)  # the bench's copy and its children only
+        return sum(rss for pid, _, rss, _ in _procs() if pid in pids) / 1024 if pids else None
 
 
 def _procs() -> list[tuple[int, int, int, str]]:
@@ -257,6 +246,47 @@ def process_tree(procs, name: str) -> set[int]:
 
 def process_tree_pids(name: str) -> set[int]:
     return process_tree(_procs(), name)
+
+
+def _paths() -> list[tuple[int, int, str]]:
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,comm="], capture_output=True, text=True).stdout
+    rows = []
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            rows.append((int(parts[0]), int(parts[1]), parts[2]))
+    return rows
+
+
+def tree_under(rows: list[tuple[int, int, str]], prefix: str) -> set[int]:
+    """PIDs of the processes whose executable lies inside `prefix` (the bench's own app bundle), and all
+    their descendants (helpers, model servers)."""
+    tree = {pid for pid, _, exe in rows if exe.startswith(prefix)}
+    grew = bool(tree)
+    while grew:
+        more = {pid for pid, ppid, _ in rows if ppid in tree} - tree
+        grew, tree = bool(more), tree | more
+    return tree
+
+
+def bundle_pids(app: App) -> set[int]:
+    """The processes launched from the bench's copy of the app (never an owner's copy of the same name)."""
+    return tree_under(_paths(), str(bundle(app)) + "/Contents/")
+
+
+def mic_decision(capturing: set[int] | None, app_tree: set[int]) -> bool:
+    """Readiness: True once the app under test (launched from the bench bundle) captures audio, False while
+    nothing does. No device-wide fallback: if CoreAudio can't say who is capturing, or anyone else is, or
+    the bench's app isn't running, the attempt is an infrastructure fault."""
+    if capturing is None:
+        raise InfraError("err_ready", "CoreAudio can't tell which process is capturing (needs macOS 14+); "
+                                      "the bench doesn't fall back to device-wide activity")
+    if not app_tree:
+        raise InfraError("err_ready", "the app launched from the bench folder isn't running")
+    others = capturing - app_tree
+    if others:
+        raise InfraError("err_ready", f"another process is capturing audio (pid {sorted(others)})")
+    return bool(capturing & app_tree)
 
 
 def process_tree_rss_mb(name: str) -> float | None:
@@ -404,8 +434,9 @@ def preflight(app: App) -> dict:
     env["default_input"] = CoreAudio().default_input_name()
     if "blackhole" not in env["default_input"].lower():
         raise SystemExit(f"the default input is '{env['default_input']}', not BlackHole 2ch (./bench machine)")
-    if subprocess.run(["pgrep", "-x", app.process], capture_output=True).returncode:
-        raise SystemExit(f"{app.process} isn't running: ./bench setup --app {app.name}, or open it")
+    if not bundle_pids(app):
+        raise SystemExit(f"{app.process} isn't running from the bench's copy ({bundle(app)}): "
+                         f"./bench setup --app {app.name}")
     exe = binary_path(app)
     env["binary_sha256"] = sha256_file(exe) if exe else ""
     return env

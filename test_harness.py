@@ -127,6 +127,23 @@ class ClipTests(unittest.TestCase):
         res = hn.run_clip(clip(), drv, tgt, clock, hn.Timing())
         self.assertEqual((res.status, res.post_stop_s), ("late", None))
 
+    def test_a_read_that_straddles_the_deadline_is_dropped(self):
+        def run(latency):
+            clock, app, drv, tgt = rig(latency=latency)
+            stop = {}
+            release = drv.release
+            drv.release = lambda: stop.setdefault("t", release())
+
+            class Straddling(hn.StubTarget):
+                def read(self):  # the read that starts in the last 0.1 s ends at stop + 30.05
+                    if "t" in stop and 29.9 <= clock.now() - stop["t"] < 30:
+                        clock.sleep(stop["t"] + 30.05 - clock.now())
+                    return super().read()
+            return hn.run_clip(clip(), drv, Straddling(app), clock, hn.Timing())
+        res = run(30.02)  # pasted 20 ms after the deadline, seen only by the straddling read
+        self.assertEqual((res.status, res.post_stop_s), ("late", None))
+        self.assertEqual(run(29.5).status, "partial")  # pasted before: counts (still settling at the deadline)
+
     def test_text_still_changing_at_the_deadline_is_partial(self):
         clock, app, drv, tgt = rig(latency=4.0, paste_in_chunks=40)  # 40 pieces 0.1 s apart from 4 s
         res = hn.run_clip(clip(), drv, tgt, clock, hn.Timing(timeout=5, settle=2))

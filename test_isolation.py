@@ -190,6 +190,58 @@ class GateTests(unittest.TestCase):
         self.assertIn("com.dictationapp.desktop", " ".join(bench.app_config("vocet").state["paths"]))
 
 
+class BindingTests(unittest.TestCase):
+    """Readiness binds to the processes launched from the bench's own bundle, with no device-wide fallback."""
+
+    ROWS = [(10, 1, "/bench/work/Applications/Vocet.app/Contents/MacOS/Vocet"),
+            (11, 10, "/bench/work/Applications/Vocet.app/Contents/MacOS/llama-helper"),
+            (12, 11, "/usr/bin/some-child"),
+            (20, 1, "/Applications/Vocet.app/Contents/MacOS/Vocet")]  # the owner's copy, same name
+
+    def test_the_tree_is_the_bench_copy_and_its_descendants_only(self):
+        import macos
+        self.assertEqual(macos.tree_under(self.ROWS, "/bench/work/Applications/Vocet.app/Contents/"), {10, 11, 12})
+
+    def test_readiness_needs_the_bench_copy_to_be_the_only_capturer(self):
+        import macos
+        tree = {10, 11, 12}
+        self.assertTrue(macos.mic_decision({11}, tree))      # its helper captures
+        self.assertFalse(macos.mic_decision(set(), tree))    # nothing yet
+        for capturing, app_tree, why in ((None, tree, "can't tell"), ({11, 20}, tree, "another process"),
+                                         ({20}, set(), "isn't running")):
+            with self.assertRaisesRegex(hn.InfraError, why):
+                macos.mic_decision(capturing, app_tree)
+
+
+class ExpectedTests(unittest.TestCase):
+    def test_expected_absences_and_the_pinned_ollama_digest(self):
+        with tempfile.TemporaryDirectory() as d:
+            gemma = pathlib.Path(d) / "gemma.gguf"
+            a = app(absent_files=[str(gemma)])
+            self.assertEqual(bench.settings_problems(a)[1], [])
+            gemma.write_bytes(b"x")
+            self.assertIn("must be absent", bench.settings_problems(a)[1][0])
+        b = app(model={"id": "m", "cleanup_ollama": "gemma3:4b", "cleanup_ollama_digest": "sha256:68ceab7e468a31c9"})
+        orig = bench.ollama_id
+        try:
+            bench.ollama_id = lambda m: "68ceab7e468a"
+            self.assertEqual(bench.settings_problems(b)[1], [])
+            bench.ollama_id = lambda m: "0123456789ab"
+            self.assertIn("not the pinned", bench.settings_problems(b)[1][0])
+            bench.ollama_id = lambda m: None
+            self.assertIn("isn't installed", bench.settings_problems(b)[1][0])
+        finally:
+            bench.ollama_id = orig
+        listing = SimpleNamespace(stdout="NAME ID SIZE MODIFIED\ngemma3:4b 68ceab7e468a 3.3 GB now\n")
+        self.assertEqual(bench.ollama_id("gemma3:4b", run=lambda *a, **k: listing), "68ceab7e468a")
+
+    def test_the_profiles_pin_what_they_expect(self):
+        gemma = "models/gemma-4-E2B-it-Q4_K_M.gguf"
+        self.assertTrue(any(f.endswith(gemma) for f in bench.app_config("vocet:best-asr").absent_files))
+        for n in ("handy:local-cleanup", "fluidvoice:local-cleanup"):
+            self.assertTrue(bench.app_config(n).model["cleanup_ollama_digest"].startswith("sha256:68ceab7e468a"))
+
+
 class SetupTests(unittest.TestCase):
     def test_setup_refuses_to_overwrite_the_owners_settings(self):
         with tempfile.TemporaryDirectory() as d:

@@ -19,7 +19,8 @@
       "~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3-coreml"
     ],
     "cleanup_model": "Ollama gemma3:4b",
-    "cleanup_ollama": "gemma3:4b"
+    "cleanup_ollama": "gemma3:4b",
+    "cleanup_ollama_digest": "sha256:68ceab7e468a31c988b44d5a4984a0e21f58c4f7158c6ce29c1804babac38df7"
   },
   "language": "en",
   "cleanup": "on (AI enhancement, Ollama gemma3:4b)",
@@ -36,7 +37,7 @@
     "SelectedProviderID": "ollama",
     "SelectedAIModel": "gemma3:4b"
   },
-  "verify": "FluidVoice needs the Ollama provider verified in its settings (it stores a fingerprint), so the setup can't preseed it: verify it once in the app.",
+  "verify": "FluidVoice needs the Ollama provider verified in its settings (it stores a fingerprint), so the setup can't preseed it: verify it once in the app. The pinned Ollama digest is gemma3:4b's manifest digest from registry.ollama.ai (2026-11-23): check `ollama list` shows ID 68ceab7e468a.",
   "state": {
     "paths": [
       "~/Library/Application Support/FluidAudio",

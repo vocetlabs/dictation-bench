@@ -104,9 +104,24 @@ def check_comparable(runs: list[dict], speakers: dict[str, str]) -> list[str]:
         if len(values) > 1:
             problems.append(f"different {label}: {sorted(values)[:3]}")
     same("protocol (timing)", lambda r: r["run"].get("timing"))
+    same("harness version", lambda r: r["run"].get("harness"))
     same("manifest", lambda r: r["run"].get("manifest_sha256"))
     same("dataset", lambda r: r["run"].get("dataset"))
+    same("clip selection", lambda r: sorted(r["run"].get("clip_ids") or []))
+    same("machine label", lambda r: r["run"].get("machine"))
     same("machine", lambda r: {k: (r["run"].get("hardware") or {}).get(k) for k in ("chip", "ram_gb", "macos_build")})
+    unverified = [r["dir"] for r in runs if r["run"].get("unverified")]
+    if unverified:
+        problems.append(f"{len(unverified)} runs used a profile still to verify (--unverified-ok trials, not "
+                        f"reportable): {unverified[:3]}")
+    by: dict[str, list[dict]] = {}
+    for r in runs:
+        by.setdefault(r["config"], []).append(r)
+    for name, rs in by.items():  # the passes of one configuration must be the same app, model and settings
+        eff = lambda r: {k: (r["run"].get("effective") or {}).get(k)  # noqa: E731
+                         for k in ("binary_sha256", "release_sha256", "model_sha256", "settings")}
+        if len({json.dumps(eff(r), sort_keys=True) for r in rs}) > 1:
+            problems.append(f"{name}: its passes differ in app binary, release, model files or settings")
     judged = [r for r in runs if r["judge"]]
     if judged:
         if len(judged) != len(runs):

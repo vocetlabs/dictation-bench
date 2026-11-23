@@ -22,14 +22,22 @@ After that, any change gets a dated entry below and the affected configurations 
   as not sendable in ZER). Latency (key release to the final text, p50 and p95) is over `ok` clips only.
   Read both with the failure rate. ZER and AMEND are estimates from one pinned judge (Claude Opus 5.5,
   amend-va 0.2.1 prompt `v1`); a second judge from another family checks them on a sample.
-- **No credit after the deadline.** The text is frozen at stop + 30 s: nothing read after it counts. After
-  any outcome but `ok`, the app is restarted (any mode), so a pending paste can't reach the next clip.
-- **One app at a time.** Before each job every benchmarked app is quit; the microphone check requires
-  that the only process capturing audio is the app under test (and its child processes).
+- **No credit after the deadline.** The text is frozen at stop + 30 s: a read counts only if it starts
+  before the deadline and completes by it. After any outcome but `ok`, the app is restarted (any mode),
+  so a pending paste can't reach the next clip.
+- **One app at a time.** Before each job every benchmarked app is quit. Readiness binds to the processes
+  launched from the bench's own copy of the app (and their children): the microphone counts as open only
+  when one of them captures audio and no other process does. There is no device-wide fallback: if CoreAudio
+  can't say who is capturing (before macOS 14), the attempt is an infrastructure fault.
 - **Scored under its label only.** Before a run, the app's settings are read back from where the app keeps
-  them and must match the profile; its model files must be present (their sha256 is recorded), and an
-  Ollama cleanup model's digest is recorded. A profile with an open `verify` item is refused unless run as a
-  trial (`--unverified-ok`, recorded in `run.json`).
+  them and must match the profile; its model files must be present (their sha256 is recorded) and the files
+  it must not have must be absent (e.g. no Gemma for Vocet `best-asr`); an Ollama cleanup model must have
+  the pinned manifest digest. A profile with an open `verify` item runs only as a trial
+  (`--unverified-ok`), recorded in `run.json`; `report` refuses trials.
+- **Comparable runs only.** `report` pools and ranks runs only with the same protocol, harness version,
+  manifest, dataset, clip selection, machine label and machine (chip, memory, macOS build) and the same
+  judge; the passes of one configuration must also share the app binary, release, model files and
+  settings.
 - **Separate columns:** spoken-text WER, intended-text WER, ZER, AMEND, failure rate, p50 and p95 latency,
   peak resident memory (the app and its child processes, sampled after each clip) and model disk size.
 - **Infrastructure faults** (focus lost, a failed read, playback, no microphone) are retried up to 3 times;

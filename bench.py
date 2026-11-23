@@ -215,22 +215,36 @@ def settings_problems(app: hn.App, read_pref=None) -> tuple[dict, list[str]]:
         for k in app.settings:
             v = read_pref(k, src["defaults"])
             got[k] = v
-    else:
-        return {}, ([f"{app.name} has settings but no settings_source"] if app.settings else [])
+    elif app.settings:
+        problems.append(f"{app.name} has settings but no settings_source")
     for k, want in app.settings.items():
         have = got.get(k)
         if isinstance(want, bool) and isinstance(have, str):
             have = have.strip() in ("1", "true", "YES")
         if have != want:
             problems.append(f"{k} is {have!r}, the profile says {want!r}")
+    for f in app.absent_files:  # e.g. no cleanup model for a profile whose cleanup is off
+        if pathlib.Path(os.path.expanduser(f)).exists():
+            problems.append(f"{f} must be absent for this profile")
     if model := app.model.get("cleanup_ollama"):
-        row = next((ln.split() for ln in subprocess.run(["ollama", "list"], capture_output=True, text=True)
-                    .stdout.splitlines()[1:] if ln.split() and ln.split()[0] == model), None) \
-            if shutil.which("ollama") else None
-        got["cleanup_ollama_digest"] = row[1] if row and len(row) > 1 else None
-        if not got["cleanup_ollama_digest"]:
+        got["cleanup_ollama_id"] = ollama_id(model)
+        want = app.model.get("cleanup_ollama_digest", "")
+        if not got["cleanup_ollama_id"]:
             problems.append(f"the Ollama model {model} isn't installed")
+        elif not want.startswith("sha256:") or want[7:7 + len(got["cleanup_ollama_id"])] != got["cleanup_ollama_id"]:
+            problems.append(f"the Ollama model {model} is {got['cleanup_ollama_id']}, not the pinned {want or '(none)'}")
     return got, problems
+
+
+def ollama_id(model: str, run=subprocess.run) -> str | None:
+    """`ollama list`'s ID of an installed model (the first 12 hex of its manifest digest), or None."""
+    if not shutil.which("ollama") and run is subprocess.run:
+        return None
+    for ln in run(["ollama", "list"], capture_output=True, text=True).stdout.splitlines()[1:]:
+        parts = ln.split()
+        if len(parts) > 1 and parts[0] == model:
+            return parts[1]
+    return None
 
 
 def run(a: argparse.Namespace) -> int:

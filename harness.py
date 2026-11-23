@@ -144,6 +144,7 @@ class App:
                                                   #   set aside on a host run and put back exactly
     settings_source: dict = field(default_factory=dict)  # {file[, key]} or {defaults}: where the app keeps
                                                   #   `settings`, read back before a run is scored
+    absent_files: list = field(default_factory=list)  # files the profile requires to be missing (checked)
 
     @property
     def base(self) -> str:
@@ -359,11 +360,21 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
     if not target.verify():
         raise InfraError("err_target", "the document lost the front while dictating")
     status = "empty"
+    deadline = t_stop + timing.timeout
     while True:
-        if clock.now() - t_stop >= timing.timeout:  # the deadline first: no read after it counts
+        # Frozen at the deadline: a read must start before it and complete by it, or it doesn't count (a
+        # slow read that straddles the deadline could otherwise pick up a late paste).
+        if clock.now() >= deadline:
             status = "partial" if text.strip() else "empty"
             break
-        poll()
+        cur = target.read()
+        if clock.now() > deadline:
+            status = "partial" if text.strip() else "empty"
+            break
+        if cur != text:
+            text, last = cur, clock.now()
+            if first is None and cur.strip():
+                first = last
         if text.strip() and clock.now() - last >= timing.settle:
             status = "ok"
             break

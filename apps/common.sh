@@ -62,7 +62,9 @@ grant() {
 # start <App.app> <process>: open in the background and wait for the process.
 start() {
   open -g "$APPS/$1"
-  for _ in $(seq 1 60); do pgrep -x "$2" >/dev/null && { sleep 10; return 0; }; sleep 1; done
+  for _ in $(seq 1 60); do  # the copy launched from the bench folder, not another of the same name
+    pgrep -f "$APPS/$1/Contents/MacOS/" >/dev/null && { sleep 10; return 0; }; sleep 1
+  done
   log "$2 didn't start"; return 1
 }
 

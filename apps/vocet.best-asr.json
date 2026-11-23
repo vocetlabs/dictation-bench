@@ -47,5 +47,8 @@
   },
   "settings_source": {
     "file": "~/Library/Application Support/com.dictationapp.desktop/settings.json"
-  }
+  },
+  "absent_files": [
+    "~/Library/Application Support/com.dictationapp.desktop/models/gemma-4-E2B-it-Q4_K_M.gguf"
+  ]
 }
