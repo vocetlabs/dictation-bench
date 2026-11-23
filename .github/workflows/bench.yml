@@ -1,6 +1,7 @@
-# The bench on GitHub-hosted macOS runners: one job per app, the app's signed release (or source build) set
-# up without a person, a synthetic smoke dictation as the gate, then (full) all clips, scored in the job.
-# Accuracy only: a runner's speed is not representative. Uploads numbers only (score.json, run.json,
+# The bench on GitHub-hosted macOS runners: one job per app (its shipped profile), the app's published
+# release set up without a person, a synthetic smoke dictation as the gate, then (full) all clips, scored in
+# the job. The same protocol as a Mac, without latency: a runner's speed is not representative (CI is for
+# reproducibility; headline numbers come from host runs). Uploads numbers only (score.json, run.json,
 # judge.json): never audio, references, drafts or corrections.
 #
 # A push smoke-tests the apps in ci-plan.json. A manual run picks one app (or all) and smoke or full.
