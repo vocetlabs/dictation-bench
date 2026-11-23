@@ -115,6 +115,28 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual(str(e.exception), "HTTP 401")
 
 
+class SecondJudgeTests(unittest.TestCase):
+    setUp = JudgeTests.setUp
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_another_model_answers_a_sample_with_its_own_cache_and_no_headline(self):
+        ep = Endpoint(model=jd.SECOND_JUDGE_MODEL)
+        backend = jd.OpenRouterJudge("k", post=ep, model=jd.SECOND_JUDGE_MODEL)
+        out = jd.judge_run(self.run, self.man, backend=backend, tools=fake_tools(), cache_dir=self.d / "cache",
+                           only={"c1"}, backoff=0, log=lambda *_: None)
+        self.assertEqual([c["clip_id"] for c in out["per_clip"]], ["c1"])
+        self.assertEqual(ep.calls[0][2]["model"], jd.SECOND_JUDGE_MODEL)
+        self.assertNotIn("zer", out)
+        self.assertEqual(out["judge"]["model"], jd.SECOND_JUDGE_MODEL)
+        self.assertTrue(list((self.d / "cache").glob("*gpt*")))
+        wrong = jd.OpenRouterJudge("k", post=Endpoint(), model=jd.SECOND_JUDGE_MODEL)  # served by the first judge
+        out = jd.judge_run(self.run, self.man, backend=wrong, tools=fake_tools(), cache_dir=self.d / "c2",
+                           only={"c2"}, attempts=1, backoff=0, log=lambda *_: None)
+        self.assertIsNone(out["per_clip"][0]["edits"])
+
+
 class BenchJudgeTests(unittest.TestCase):
     def test_off_without_a_key(self):
         buf = io.StringIO()

@@ -8,6 +8,7 @@ import ctypes.util
 import os
 import pathlib
 import subprocess
+import sys
 import time
 
 from harness import (Clip, Driver, InfraError, Key, MODIFIERS, KEYS, App, Target, Timing, key_events,
@@ -208,6 +209,27 @@ class BlackHoleDriver(Driver):
         if restart:
             restart_app(self.app)
 
+    def rss_mb(self) -> float | None:
+        return process_tree_rss_mb(self.app.process)
+
+
+def process_tree_rss_mb(name: str) -> float | None:
+    """Resident memory of the processes named `name` and all their descendants (helpers, model servers)."""
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,rss=,comm="], capture_output=True, text=True).stdout
+    procs = []
+    for line in out.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) == 4 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit():
+            procs.append((int(parts[0]), int(parts[1]), int(parts[2]), os.path.basename(parts[3])))
+    tree = {p for p, _, _, comm in procs if comm == name}
+    if not tree:
+        return None
+    grew = True
+    while grew:
+        more = {p for p, pp, _, _ in procs if pp in tree} - tree
+        grew, tree = bool(more), tree | more
+    return sum(rss for p, _, rss, _ in procs if p in tree) / 1024
+
 
 def restart_app(app: App, settle: float = 10.0) -> None:
     """Quit (TERM, then KILL) and reopen the app in the background, then let it load its model."""
@@ -362,3 +384,51 @@ def sha256_file(path: pathlib.Path) -> str:
 
 __all__ = ["BlackHoleDriver", "CoreAudio", "MacKeys", "TextEditTarget", "preflight", "restart_app",
            "MODIFIERS", "KEYS"]
+
+
+TEXT_CORRECTIONS = ("NSAutomaticCapitalizationEnabled", "NSAutomaticPeriodSubstitutionEnabled",
+                    "NSAutomaticSpellingCorrectionEnabled", "NSAutomaticQuoteSubstitutionEnabled",
+                    "NSAutomaticDashSubstitutionEnabled", "NSAutomaticTextReplacementEnabled",
+                    "NSAutomaticInlinePredictionEnabled", "NSAutomaticTextCompletionEnabled")
+
+
+def _out(*cmd: str) -> str:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=20).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def hardware() -> dict:
+    """The machine a run measured: chip, memory, macOS version and build, power source, load average."""
+    mem = _out("sysctl", "-n", "hw.memsize")
+    power = _out("pmset", "-g", "batt").splitlines()
+    return {"chip": _out("sysctl", "-n", "machdep.cpu.brand_string"),
+            "ram_gb": round(int(mem) / 2**30) if mem.isdigit() else None,
+            "macos": _out("sw_vers", "-productVersion"), "macos_build": _out("sw_vers", "-buildVersion"),
+            "power": power[0].split("'")[1] if power and "'" in power[0] else "",
+            "load": _out("sysctl", "-n", "vm.loadavg").strip("{} ")}
+
+
+def vm_running() -> bool:
+    """A virtual machine on this Mac (Virtualization.framework, which Lume and others use)."""
+    return bool(_out("pgrep", "-f", "com.apple.Virtualization.VirtualMachine"))
+
+
+def save_machine_state() -> dict:
+    """What `bench machine` changes: the default input and the Mac-wide text corrections."""
+    return {"input": CoreAudio().default_input_name(),
+            "defaults": {k: _out("defaults", "read", "-g", k) or None for k in TEXT_CORRECTIONS}}
+
+
+def restore_machine_state(state: dict) -> None:
+    for k, v in state["defaults"].items():
+        if v is None:
+            subprocess.run(["defaults", "delete", "-g", k], capture_output=True)
+        else:
+            subprocess.run(["defaults", "write", "-g", k, "-bool", "true" if v in ("1", "true") else "false"])
+    try:
+        ca = CoreAudio()
+        ca.set_default_input(ca.find_input(state["input"]))
+    except Exception as e:  # noqa: BLE001: tell the person, don't hide the run's own result
+        print(f"host-run: set the input back to '{state['input']}' in System Settings > Sound ({e})", file=sys.stderr)

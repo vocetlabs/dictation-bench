@@ -30,6 +30,8 @@ import urllib.request
 import score as sc
 
 JUDGE_MODEL = os.environ.get("BENCH_JUDGE_MODEL", "anthropic/claude-opus-5.5")
+# The judge check's second judge (BENCH2): another model family, the same prompt, pinned.
+SECOND_JUDGE_MODEL = "openai/gpt-6.2-sol"
 JUDGE_URL = os.environ.get("BENCH_JUDGE_URL", "https://openrouter.ai/api/v1/chat/completions")
 BATCH_URL = os.environ.get("BENCH_JUDGE_BATCH_URL", "https://openrouter.ai/api/v1/batches")
 BATCH_POLL_S = 60          # the Batch API's advice: once a minute; back off on 429
@@ -101,7 +103,7 @@ def request_body(prompt: str) -> dict:
             "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]}
 
 
-def parse_reply(reply: dict) -> str:
+def parse_reply(reply: dict, model: str = JUDGE_MODEL) -> str:
     """{fixed} from a chat-completions response, refused if it came from another model."""
     try:
         content = reply["choices"][0]["message"]["content"]
@@ -110,16 +112,16 @@ def parse_reply(reply: dict) -> str:
         raise JudgeError("the reply had no {fixed} object") from None
     if not isinstance(fixed, str):
         raise JudgeError("the reply's fixed is not a string")
-    served = str(reply.get("model", JUDGE_MODEL))
-    if not served.startswith(JUDGE_MODEL.split(":")[0]):
+    served = str(reply.get("model", model))
+    if not served.startswith(model.split(":")[0]):
         raise JudgeError("the reply came from another model")
     return fixed
 
 
-def ask(prompt: str, key: str, post=http_post) -> str:
-    body = {"model": JUDGE_MODEL, **request_body(prompt)}
+def ask(prompt: str, key: str, post=http_post, model: str = JUDGE_MODEL) -> str:
+    body = {"model": model, **request_body(prompt)}
     return parse_reply(post(JUDGE_URL, {"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                            body))
+                            body), model)
 
 
 class OneAtATime:
@@ -150,13 +152,13 @@ class OneAtATime:
 class OpenRouterJudge(OneAtATime):
     """JUDGE_MODEL through OpenRouter's synchronous chat-completions API, with JUDGE_API_KEY."""
 
-    def __init__(self, key: str, post=http_post) -> None:
-        self.key, self.post = key, post
-        self.cache_id = JUDGE_MODEL  # the cache key's model part, as before
-        self.meta = {"model": JUDGE_MODEL, "api": JUDGE_URL.split("/")[2], "reasoning_effort": REASONING_EFFORT}
+    def __init__(self, key: str, post=http_post, model: str = JUDGE_MODEL) -> None:
+        self.key, self.post, self.model = key, post, model
+        self.cache_id = model  # the cache key's model part, as before
+        self.meta = {"model": model, "api": JUDGE_URL.split("/")[2], "reasoning_effort": REASONING_EFFORT}
 
     def ask(self, prompt: str, intended: str) -> str:
-        return ask(prompt, self.key, self.post)
+        return ask(prompt, self.key, self.post, self.model)
 
 
 class OpenRouterBatchJudge:
@@ -412,7 +414,8 @@ def cache_path(cache_dir: pathlib.Path, cache_id: str = JUDGE_MODEL) -> pathlib.
 
 def judge_run(run_dir: pathlib.Path, manifest: pathlib.Path, key: str = "", *, backend=None, tools=None,
               post=http_post, cache_dir: pathlib.Path | None = None, attempts: int = 3, backoff: float = 5.0,
-              max_calls: int = 400, use_cache: bool = True, limit: int | None = None, log=print) -> dict:
+              max_calls: int = 400, use_cache: bool = True, limit: int | None = None,
+              only: set[str] | None = None, log=print) -> dict:
     """judge.json's content. The run must be complete (score.score_run's checks); the result has headline
     ZER/AMEND only when every clip has a judgement. A usage limit or an unfinished batch stops the run; rerun
     to resume (the cache answers what was already judged). use_cache=False with a limit re-asks the first
@@ -447,6 +450,9 @@ def judge_run(run_dir: pathlib.Path, manifest: pathlib.Path, key: str = "", *, b
             prompt = build_prompt(m["intended_text"], r["transcript"], m["spoken_text"], PROMPT_VERSION)
             k = hashlib.sha256(f"{backend.cache_id}\n{PROMPT_VERSION}\n{JUDGE_VERSION}\n{prompt}".encode()).hexdigest()
             entries.append((cid, prompt, m["intended_text"], k))
+        if only is not None:  # a sample (the judge check): those clips only, no headline
+            entries = [e for e in entries if e[0] in only]
+            no_output = {c: v for c, v in no_output.items() if c in only}
         if limit:
             entries = entries[:limit]
             no_output = {}
@@ -491,9 +497,9 @@ def judge_run(run_dir: pathlib.Path, manifest: pathlib.Path, key: str = "", *, b
                           "same_edit_count": same_edits}
         log(f"judge recheck: {len(both)} compared, {same_zero} same zero-edit verdict, {same_edits} same edit count")
         return out
-    if failed or limit:
+    if failed or limit or only is not None:
         out["incomplete"] = (f"{failed} clips without a judgement" + (" (stopped: rerun to resume)" if stopped else "")
-                             if failed else "a limited run") + ": no headline"
+                             if failed else "a sample" if only is not None else "a limited run") + ": no headline"
     else:
         out["zer"] = round(100 * sum(c["zero_edit"] for c in judged) / len(judged), 1) if judged else None
         out["amend"] = round(100 * sum(c["edits"] for c in judged) / max(1, sum(c["chars"] for c in judged)), 2)

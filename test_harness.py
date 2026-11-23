@@ -58,6 +58,24 @@ class HotkeyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             hn.App(name="bad", mode="toggle", hybrid=True, **base)
 
+    def test_ci_and_local_runs_use_one_protocol(self):
+        a, b = hn.accuracy_only(), hn.Timing()
+        self.assertFalse(a.timed)
+        self.assertEqual((a.pad_ms, a.start_delay, a.tail, a.settle, a.timeout), (300, 0.5, 4.0, 2.0, 30.0))
+        self.assertEqual((a.settle, a.timeout, a.quiet), (b.settle, b.timeout, b.quiet))
+
+    def test_a_config_is_named_app_dot_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "x.shipped.json"
+            p.write_text(json.dumps({"name": "x.other", "version": "1", "process": "x", "app_path": "/X.app",
+                                     "hotkey": "ralt"}))
+            with self.assertRaisesRegex(ValueError, "name must be"):
+                hn.load_app(p)
+            q = pathlib.Path(d) / "x.fast.json"
+            q.write_text(p.read_text().replace("x.other", "x.fast"))
+            with self.assertRaisesRegex(ValueError, "profile"):
+                hn.load_app(q)
+
     def test_every_checked_in_app_config_loads(self):
         for path in sorted((HERE / "apps").glob("*.json")):
             app = hn.load_app(path)
@@ -182,6 +200,15 @@ class RunTests(unittest.TestCase):
         hn.write_rows(self.out / "results.csv", {"a": {"clip_id": "c1"}, "b": {"clip_id": "c1"}})
         with self.assertRaises(SystemExit):
             hn.load_rows(self.out / "results.csv")
+
+    def test_the_apps_peak_memory_goes_into_run_json(self):
+        clock, app, drv, tgt = rig()
+        readings = iter([300.0, 512.5, 400.0])
+        drv.rss_mb = lambda: next(readings)
+        clips = [clip(1), clip(2), clip(3)]
+        hn.run_all(clips, drv, tgt, clock, hn.Timing(), self.out, run={"fingerprint": "f", "clip_ids": ["c1", "c2", "c3"]},
+                   restart_after_ambiguous=False, **QUIET)
+        self.assertEqual(json.loads((self.out / "run.json").read_text())["peak_rss_mb"], 512.5)
 
     def test_run_json_records_the_run(self):
         self.run_all([clip(1)], rig())

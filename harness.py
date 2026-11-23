@@ -136,6 +136,24 @@ class App:
     logs: str = ""                                # the app's log files (glob), shown when the smoke test fails
     log_counts: str = ""                          # a regex with one group: its values in the app's log are
                                                   #   counted over the run (numbers only, never the lines)
+    settings: dict = field(default_factory=dict)  # what the profile sets (CONFIGS.md), recorded in run.json
+    same_as: str = ""                             # this profile is that profile's configuration: not run twice
+    na: str = ""                                  # why the app has no such profile ("n/a" in the tables)
+    verify: str = ""                              # what the Lead still checks in a VM before a scored run
+
+    @property
+    def base(self) -> str:
+        """The app, without the profile: handy for handy.shipped."""
+        return self.name.split(".", 1)[0]
+
+    @property
+    def profile(self) -> str:
+        return self.name.split(".", 1)[1] if "." in self.name else "shipped"
+
+    @property
+    def group(self) -> str:
+        """The headline's two groups: raw speech, or speech with the app's local cleanup."""
+        return "raw speech" if self.cleanup == "off" else "speech + local cleanup"
 
     def __post_init__(self) -> None:
         parse_hotkey(self.hotkey)
@@ -151,7 +169,12 @@ def restarts_after_unclear(app: App) -> bool:
 
 
 def load_app(path: pathlib.Path) -> App:
-    return App(**json.loads(path.read_text()))
+    app = App(**json.loads(path.read_text()))
+    if app.name != path.stem:
+        raise ValueError(f"{path.name}: name must be {path.stem}")
+    if app.profile not in PROFILES:
+        raise ValueError(f"{path.name}: profile must be one of {PROFILES} (apps/<app>.<profile>.json)")
+    return app
 
 
 # --- Clips -------------------------------------------------------------------------------------------
@@ -206,9 +229,14 @@ class Timing:
     timed: bool = True         # False: accuracy only (a machine whose speed doesn't count)
 
 
+PROFILES = ("shipped", "best-asr", "local-cleanup")
+
+
 def accuracy_only() -> Timing:
-    """Same audio, hold and tail; a longer wait for text, so a slow machine costs time, not accuracy."""
-    return Timing(settle=3.0, timeout=60.0, quiet=10.0, timed=False)
+    """The same protocol as every run (Voice Arena's timing: 300 ms padding, 0.5 s start delay, 4 s tail,
+    2 s settle, 30 s from the release); only the latency isn't reported, for a machine whose speed doesn't
+    count (a CI runner)."""
+    return Timing(timed=False)
 
 
 class InfraError(Exception):
@@ -260,6 +288,9 @@ class Driver:
         raise NotImplementedError
     def recover(self, restart: bool) -> None:
         """Make the app idle: release any held key; restart=True restarts the app."""
+    def rss_mb(self) -> float | None:
+        """The app's resident memory now (its process and their children), in MB; None if unknown."""
+        return None
 
 
 @dataclass
@@ -408,6 +439,7 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
     wanted = {c.clip_id for c in clips}
     rows = {k: v for k, v in load_rows(rows_path).items() if k in wanted}
     write_rows(rows_path, rows)
+    peak = float(json.loads(meta_path.read_text()).get("peak_rss_mb") or 0)
     for i, clip in enumerate(clips, 1):
         if rows.get(clip.clip_id, {}).get("status") in APP_OUTCOMES:
             continue
@@ -430,6 +462,12 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
             "e2t_s": fmt(res.e2t_s), "post_stop_s": fmt(res.post_stop_s), "first_text_s": fmt(res.first_text_s),
             "error": res.error, "run_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
         write_rows(rows_path, rows)
+        rss = driver.rss_mb()
+        if rss and rss > peak:  # the app's peak resident memory over the run, sampled after each clip
+            peak = rss
+            meta = json.loads(meta_path.read_text())
+            meta["peak_rss_mb"] = round(peak, 1)
+            meta_path.write_text(json.dumps(meta, indent=1, sort_keys=True) + "\n")
         log(f"[{i}/{len(clips)}] {clip.clip_id} {res.status} tries={tries} e2t={fmt(res.e2t_s)} "
             f"chars={len(res.transcript)} {res.error}")
         clock.sleep(timing.gap)
