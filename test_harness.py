@@ -183,6 +183,29 @@ class RunTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             hn.load_rows(self.out / "results.csv")
 
+    def test_an_eval_builds_drafts_go_into_the_results(self):
+        drafts = pathlib.Path(self.dir.name) / "drafts.jsonl"
+        drafts.write_text('{"raw": "older", "final": "older", "cleanup": "fallback_timeout"}\n')  # before the run
+        clock, app, drv, tgt = rig(drafts=drafts)
+        clips = [clip(1), clip(2)]
+        rows = hn.run_all(clips, drv, tgt, clock, hn.Timing(), self.out,
+                          run={"fingerprint": "f1", "clip_ids": [c.clip_id for c in clips]},
+                          restart_after_ambiguous=False, drafts=hn.Drafts(drafts), **QUIET)
+        for cid in ("c1", "c2"):
+            self.assertEqual((rows[cid]["raw_draft"], rows[cid]["cleanup"]), ("um " + REF, "applied"))
+        with (self.out / "results.csv").open(newline="") as fh:
+            self.assertEqual(next(csv.DictReader(fh))["raw_draft"], "um " + REF)
+
+    def test_drafts_skip_a_torn_line_and_without_a_record_stay_empty(self):
+        path = pathlib.Path(self.dir.name) / "drafts.jsonl"
+        d = hn.Drafts(path)
+        self.assertEqual((d.mark(), d.since(0)), (0, {}))  # no file yet
+        path.write_text('{"raw": "a", "cleanup": "applied"}\n{"raw": "b", "clea')
+        self.assertEqual(d.since(0)["raw"], "a")
+        self.assertEqual(d.since(d.mark()), {})
+        rows = self.run_all([clip(1)], rig())
+        self.assertEqual(rows["c1"].get("raw_draft", ""), "")  # no drafts file configured
+
     def test_run_json_records_the_run(self):
         self.run_all([clip(1)], rig())
         self.assertEqual(json.loads((self.out / "run.json").read_text())["fingerprint"], "f1")

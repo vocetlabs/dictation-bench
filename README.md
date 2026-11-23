@@ -99,6 +99,13 @@ installed (system output left on the speakers), and Accessibility for the termin
 For speed numbers, use a quiet Mac: no other VMs or builds; note the load average and free memory before and
 after. Quit every other dictation app (several share the same key).
 
+**Speech vs cleanup (eval builds).** An app build that writes its own record of each dictation (Vocet's
+`eval-capture` build: one JSON line with the raw speech draft, the final text and the cleanup outcome) can be
+named in the app config as `"drafts": "<path to its JSON lines file>"`. Each clip's last record then fills the
+`raw_draft` and `cleanup` columns of `results.csv`, and `score.json` adds `wer_raw_intended`,
+`wer_raw_spoken` and `raw_drafts` (numbers only). Like the transcripts, those columns stay in the local
+`results.csv`; the workflow uploads only the JSON files.
+
 `python3 bench.py dry-run` runs the loop against a simulated app; `./test.sh` runs the tests (standard library
 only, no macOS).
 

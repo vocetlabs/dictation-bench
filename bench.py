@@ -174,8 +174,9 @@ def run(a: argparse.Namespace) -> int:
                 "macos": env["macos"], "clip_ids": [c.clip_id for c in clips]}
         info["fingerprint"] = hn.fingerprint(**info)
         before = log_counts(app)
+        drafts = hn.Drafts(pathlib.Path(os.path.expanduser(app.drafts))) if app.drafts else None
         rows = hn.run_all(clips, driver, target, hn.Clock(), timing, out, run=info,
-                          restart_after_ambiguous=restart, attempts=a.attempts)
+                          restart_after_ambiguous=restart, attempts=a.attempts, drafts=drafts)
         if app.log_counts:  # e.g. how many cleanups were applied or fell back, over this run's clips
             meta = json.loads((out / "run.json").read_text())
             meta["app_log_counts"] = count_diff(log_counts(app), before)
