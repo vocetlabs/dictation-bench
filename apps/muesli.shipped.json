@@ -1,5 +1,5 @@
 {
-  "name": "muesli",
+  "name": "muesli.shipped",
   "version": "0.8.6",
   "process": "Muesli",
   "app_path": "/Applications/Muesli.app",
@@ -14,12 +14,20 @@
   "model": {
     "id": "Parakeet Unified EN 0.6B, Core ML (onboarding default)",
     "size_mb": 565,
-    "backend": "FluidAudio Core ML"
+    "backend": "FluidAudio Core ML",
+    "files": [
+      "~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b-coreml"
+    ]
   },
   "language": "en",
   "cleanup": "off",
   "notes": "HotkeyConfig default: Right Option, hold.",
   "hosted_setup": true,
-  "settings_files": ["~/Library/Application Support/Muesli/config.json"],
-  "logs": "unified:Muesli:"
+  "settings_files": [
+    "~/Library/Application Support/Muesli/config.json"
+  ],
+  "logs": "unified:Muesli:",
+  "settings": {
+    "has_completed_onboarding": true
+  }
 }

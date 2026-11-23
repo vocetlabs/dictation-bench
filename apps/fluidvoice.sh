@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# FluidVoice 1.6.13, as its onboarding leaves it on Apple silicon: onboarding done, its default model
-# ("FluidVoice Pick": Parakeet TDT v3, Core ML, through FluidAudio) downloaded and chosen, the default key
-# (Right Option) and activation (toggle).
+# FluidVoice 1.6.13. shipped: as its onboarding leaves it on Apple silicon (its default model "FluidVoice
+# Pick": Parakeet TDT v3, Core ML, through FluidAudio; Right Option; toggle). best-asr: Cohere Transcribe
+# (6-bit), English, which the app downloads itself. local-cleanup: the shipped model plus AI enhancement
+# through its Ollama provider (pinned model), which has to be verified once in the app. See CONFIGS.md.
 . "$(dirname "$0")/common.sh"
 install_dmg https://github.com/altic-dev/FluidVoice/releases/download/v1.6.13/Fluid-oss-1.6.13.dmg \
   8da47aba78de572973c287ab5e33d9eefc4b8938f69bbff99249e28900ce49aa FluidVoice.app
@@ -12,6 +13,23 @@ models="$HOME/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3
 uvx --quiet --from huggingface_hub==0.26.2 huggingface-cli download FluidInference/parakeet-tdt-0.6b-v3-coreml \
   --revision 7dd20fe6b1797d35f5e3307e8b1732d9a178edfe --include "*.mlmodelc/*" "*.json" --local-dir "$models" >/dev/null
 d=com.FluidApp.app
+osascript -e 'quit app "FluidVoice"' >/dev/null 2>&1 || true
 defaults write $d OnboardingCompleted -bool true
-defaults write $d SelectedSpeechModel -string parakeet-tdt
+case $PROFILE in
+  best-asr)
+    defaults write $d SelectedSpeechModel -string cohere-transcribe-6bit
+    defaults write $d SelectedCohereLanguage -string en
+    defaults write $d EnableAIProcessing -bool false
+    log "best-asr: let FluidVoice download Cohere Transcribe (Settings > Voice Engine)" ;;
+  local-cleanup)
+    ollama_model gemma3:4b
+    defaults write $d SelectedSpeechModel -string parakeet-tdt
+    defaults write $d EnableAIProcessing -bool true
+    defaults write $d SelectedProviderID -string ollama
+    defaults write $d SelectedAIModel -string gemma3:4b
+    log "local-cleanup: verify the Ollama provider once in FluidVoice's AI settings (it stores a fingerprint)" ;;
+  *)
+    defaults write $d SelectedSpeechModel -string parakeet-tdt
+    defaults write $d EnableAIProcessing -bool false ;;
+esac
 start FluidVoice.app FluidVoice

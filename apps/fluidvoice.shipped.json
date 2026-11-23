@@ -1,5 +1,5 @@
 {
-  "name": "fluidvoice",
+  "name": "fluidvoice.shipped",
   "version": "1.6.13",
   "process": "FluidVoice",
   "app_path": "/Applications/FluidVoice.app",
@@ -14,12 +14,21 @@
   "model": {
     "id": "Parakeet TDT v3, Core ML (\"FluidVoice Pick\", the Apple-silicon default)",
     "size_mb": 461,
-    "backend": "FluidAudio Core ML"
+    "backend": "FluidAudio Core ML",
+    "files": [
+      "~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3-coreml"
+    ]
   },
   "language": "en",
   "cleanup": "off",
   "notes": "Default primary shortcut Right Option; hotkey mode toggle unless press-and-hold is turned on.",
   "hosted_setup": true,
-  "settings_files": ["~/Library/Preferences/com.FluidApp.app.plist"],
-  "logs": "unified:FluidVoice:"
+  "settings_files": [
+    "~/Library/Preferences/com.FluidApp.app.plist"
+  ],
+  "logs": "unified:FluidVoice:",
+  "settings": {
+    "OnboardingCompleted": true,
+    "SelectedSpeechModel": "parakeet-tdt"
+  }
 }

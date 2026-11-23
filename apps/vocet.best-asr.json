@@ -1,0 +1,37 @@
+{
+  "name": "vocet.best-asr",
+  "version": "0.2.0",
+  "process": "Vocet",
+  "app_path": "/Applications/Vocet.app",
+  "hotkey": "ralt",
+  "mode": "hold",
+  "release": {
+    "url": "https://github.com/vocetlabs/dictation-app/releases/download/v0.2.0/Vocet_0.2.0_aarch64.dmg",
+    "sha256": "b7a3137e0ddccbb48c8ff21f82ee1e1301a51a51d0b209cfb9366cb7a9068e70",
+    "tag": "v0.2.0",
+    "commit": "b99f79b64d"
+  },
+  "model": {
+    "id": "OrukQwen 1.7B Q4_K_M",
+    "size_mb": 1259,
+    "backend": "llama.cpp on Metal",
+    "files": [
+      "~/Library/Application Support/com.dictationapp.desktop/models/orukqwen-asr-1.7b-Q4_K_M.gguf"
+    ]
+  },
+  "language": "en",
+  "cleanup": "off",
+  "notes": "Maintainer-recommended local ASR (OrukQwen 1.7B, Vocet's only local speech model) with cleanup off: 0.2.0 has no cleanup switch, and its on-device cleanup runs only while the Gemma model is present, so the setup moves the Gemma file aside.",
+  "hosted_setup": false,
+  "settings_files": [
+    "~/Library/Application Support/com.dictationapp.desktop/settings.json"
+  ],
+  "logs": "~/Library/Logs/com.dictationapp.desktop/dictation-app.log*",
+  "log_counts": "cleanup outcome=\"([a-z_]+)\"",
+  "settings": {
+    "transcription": "local",
+    "hotkey": "RightAlt",
+    "share_usage_events": false
+  },
+  "verify": "With the Gemma file moved aside, Vocet 0.2.0 pastes the raw OrukQwen text (log: no cleanup line) and doesn't download Gemma again."
+}

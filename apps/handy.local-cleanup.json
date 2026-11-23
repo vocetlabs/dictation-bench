@@ -1,0 +1,42 @@
+{
+  "name": "handy.local-cleanup",
+  "version": "0.10.1",
+  "process": "handy",
+  "app_path": "/Applications/Handy.app",
+  "hotkey": "lalt+shift+space",
+  "mode": "hold",
+  "release": {
+    "url": "https://github.com/cjpais/Handy/releases/download/v0.10.1/Handy_0.10.1_aarch64.dmg",
+    "sha256": "7cdef5de7d1bfcea70813320b897540cbead2190f5280db6d9760a59e5995463",
+    "tag": "v0.10.1",
+    "commit": "aca8985190"
+  },
+  "model": {
+    "id": "Parakeet Unified EN 0.6B, Q8_0 GGUF",
+    "size_mb": 731,
+    "backend": "GGUF on Metal",
+    "files": [
+      "~/.cache/huggingface/hub/models--handy-computer--parakeet-unified-en-0.6b-gguf/snapshots/7e948f21b7bdbac698d3318db9d350f1096f3b6c/parakeet-unified-en-0.6b-Q8_0.gguf"
+    ],
+    "cleanup_model": "Ollama gemma3:4b"
+  },
+  "language": "en",
+  "cleanup": "on (post-processing, Ollama gemma3:4b, Handy's default prompt)",
+  "notes": "ASR held at the shipped model. Post-processing through Handy's Custom provider (default base URL http://localhost:11434/v1, Ollama) with the pinned local model gemma3:4b; the transcribe-with-post-process shortcut (Option+Shift+Space). Apple Intelligence requires macOS 26 (the host has macOS 15).",
+  "hosted_setup": false,
+  "settings_files": [
+    "~/Library/Application Support/com.pais.handy/settings_store.json"
+  ],
+  "logs": "~/Library/Logs/com.pais.handy/*.log",
+  "hybrid": true,
+  "settings": {
+    "selected_model": "handy-computer/parakeet-unified-en-0.6b-gguf/parakeet-unified-en-0.6b-Q8_0.gguf",
+    "selected_language": "en",
+    "post_process_enabled": true,
+    "post_process_provider_id": "custom",
+    "post_process_models": {
+      "custom": "gemma3:4b"
+    }
+  },
+  "verify": "Ollama with gemma3:4b answers at localhost:11434; Handy pastes the post-processed text on Option+Shift+Space."
+}

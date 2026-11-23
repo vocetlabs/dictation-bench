@@ -1,0 +1,34 @@
+{
+  "name": "fluidvoice.best-asr",
+  "version": "1.6.13",
+  "process": "FluidVoice",
+  "app_path": "/Applications/FluidVoice.app",
+  "hotkey": "ralt",
+  "mode": "toggle",
+  "release": {
+    "url": "https://github.com/altic-dev/FluidVoice/releases/download/v1.6.13/Fluid-oss-1.6.13.dmg",
+    "sha256": "8da47aba78de572973c287ab5e33d9eefc4b8938f69bbff99249e28900ce49aa",
+    "tag": "v1.6.13",
+    "commit": "9912eca0d9"
+  },
+  "model": {
+    "id": "Cohere Transcribe (6-bit), English selected",
+    "size_mb": 1577,
+    "backend": "Core ML",
+    "files": []
+  },
+  "language": "en",
+  "cleanup": "off",
+  "notes": "Maintainer-recommended local ASR for accuracy: the highest accuracy rating in FluidVoice's model list (accuracyPercent 0.98, shared with Fluid Speech Pro), language set to English as the app asks. Alternative English-only pick: Parakeet TDT v2 (0.96, 'Higher Accuracy'). Cleanup off.",
+  "hosted_setup": false,
+  "settings_files": [
+    "~/Library/Preferences/com.FluidApp.app.plist"
+  ],
+  "logs": "unified:FluidVoice:",
+  "settings": {
+    "OnboardingCompleted": true,
+    "SelectedSpeechModel": "cohere-transcribe-6bit",
+    "SelectedCohereLanguage": "en"
+  },
+  "verify": "FluidVoice downloads Cohere Transcribe itself: choose it in Settings > Voice Engine (English), then add its model folder to model.files."
+}

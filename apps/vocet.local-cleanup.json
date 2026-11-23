@@ -1,0 +1,39 @@
+{
+  "name": "vocet.local-cleanup",
+  "version": "0.2.0",
+  "process": "Vocet",
+  "app_path": "/Applications/Vocet.app",
+  "hotkey": "ralt",
+  "mode": "hold",
+  "release": {
+    "url": "https://github.com/vocetlabs/dictation-app/releases/download/v0.2.0/Vocet_0.2.0_aarch64.dmg",
+    "sha256": "b7a3137e0ddccbb48c8ff21f82ee1e1301a51a51d0b209cfb9366cb7a9068e70",
+    "tag": "v0.2.0",
+    "commit": "b99f79b64d"
+  },
+  "model": {
+    "id": "OrukQwen 1.7B Q4_K_M + Gemma 4 E2B Q4_K_M cleanup",
+    "size_mb": 4222,
+    "backend": "llama.cpp on Metal",
+    "files": [
+      "~/Library/Application Support/com.dictationapp.desktop/models/orukqwen-asr-1.7b-Q4_K_M.gguf",
+      "~/Library/Application Support/com.dictationapp.desktop/models/gemma-4-E2B-it-Q4_K_M.gguf"
+    ],
+    "cleanup_model": "Gemma 4 E2B Q4_K_M"
+  },
+  "language": "en",
+  "cleanup": "on (Gemma 4 E2B, on device)",
+  "notes": "Vocet's on-device cleanup (Gemma 4 E2B) is part of its shipped 'On this Mac' setup: same configuration as shipped.",
+  "hosted_setup": false,
+  "settings_files": [
+    "~/Library/Application Support/com.dictationapp.desktop/settings.json"
+  ],
+  "logs": "~/Library/Logs/com.dictationapp.desktop/dictation-app.log*",
+  "log_counts": "cleanup outcome=\"([a-z_]+)\"",
+  "settings": {
+    "transcription": "local",
+    "hotkey": "RightAlt",
+    "share_usage_events": false
+  },
+  "same_as": "vocet.shipped"
+}
