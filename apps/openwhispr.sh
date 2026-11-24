@@ -78,3 +78,9 @@ printf 'DICTATION_KEY=RightOption\nACTIVATION_MODE=push\n' >>"$ud/.env"
 open -g --env OPENWHISPR_LOG_LEVEL=debug "$app"
 for _ in $(seq 1 60); do pgrep -U "$(id -u)" -f "^$app/Contents/MacOS/" >/dev/null && break; sleep 1; done
 sleep 15
+# The rest of the profile's .env keys (the speech model, language and cleanup: CLEANUP_PROVIDER and
+# LOCAL_CLEANUP_MODEL are derived from the window's settings in ipcHandlers.js, then saveAllKeysToEnvFile in
+# environment.js) are written by the app itself some time after launch. Wait for them, so a run never starts
+# before the app holds the profile's settings.
+"$BENCH_ROOT/bench" settings-wait --app "openwhispr:$PROFILE" --timeout 90 ||
+  { log "OpenWhispr didn't write its profile's settings to $ud/.env within 90 s"; exit 1; }
