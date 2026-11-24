@@ -1,0 +1,46 @@
+{
+  "name": "fluidvoice.best-asr",
+  "version": "1.6.13",
+  "process": "FluidVoice",
+  "app_path": "/Applications/FluidVoice.app",
+  "hotkey": "ralt",
+  "mode": "toggle",
+  "release": {
+    "url": "https://github.com/altic-dev/FluidVoice/releases/download/v1.6.13/Fluid-oss-1.6.13.dmg",
+    "sha256": "8da47aba78de572973c287ab5e33d9eefc4b8938f69bbff99249e28900ce49aa",
+    "tag": "v1.6.13",
+    "commit": "9912eca0d9"
+  },
+  "model": {
+    "id": "Whisper Large",
+    "backend": "whisper (FluidVoice)",
+    "files": []
+  },
+  "language": "en",
+  "cleanup": "off",
+  "notes": "Maintainer-recommended local ASR for accuracy: FluidVoice's model list rates Whisper Large and Qwen3 ASR 1.7B highest (accuracyPercent 1.00, above Cohere Transcribe 0.98); Whisper Large is the one it describes as 'Best possible accuracy' and comes first in its list. Cleanup off.",
+  "hosted_setup": false,
+  "settings_files": [
+    "~/Library/Preferences/com.FluidApp.app.plist"
+  ],
+  "logs": "unified:FluidVoice:",
+  "settings": {
+    "OnboardingCompleted": true,
+    "SelectedSpeechModel": "whisper-large",
+    "EnableAIProcessing": false
+  },
+  "verify": "Verify on the host (16 GB): FluidVoice needs 8 GB of free memory to load Whisper Large (the 8 GB VM refuses and deletes it). Download it in Settings > Voice Engine (setup waits and restarts FluidVoice), check the language (English or auto), then add ~/Library/Caches/WhisperModels/whisper-large-v3-Q8_0.gguf (1668741440 bytes, sha256 2fa1a5f179f8a511a53e2108db270aa4af3ce08cd976af4180e2854666bb4ba3) to model.files.",
+  "state": {
+    "paths": [
+      "~/Library/Application Support/FluidAudio",
+      "~/Library/Application Support/com.FluidApp.app",
+      "~/Library/Caches/com.FluidApp.app"
+    ],
+    "defaults": [
+      "com.FluidApp.app"
+    ]
+  },
+  "settings_source": {
+    "defaults": "com.FluidApp.app"
+  }
+}

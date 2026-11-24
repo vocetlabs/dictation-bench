@@ -1,5 +1,5 @@
 {
-  "name": "voiceink",
+  "name": "voiceink.shipped",
   "version": "2.27",
   "process": "VoiceInk",
   "app_path": "/Applications/VoiceInk.app",

@@ -58,6 +58,24 @@ class HotkeyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             hn.App(name="bad", mode="toggle", hybrid=True, **base)
 
+    def test_ci_and_local_runs_use_one_protocol(self):
+        a, b = hn.accuracy_only(), hn.Timing()
+        self.assertFalse(a.timed)
+        self.assertEqual((a.pad_ms, a.start_delay, a.tail, a.settle, a.timeout), (300, 0.5, 4.0, 2.0, 30.0))
+        self.assertEqual((a.settle, a.timeout, a.quiet), (b.settle, b.timeout, b.quiet))
+
+    def test_a_config_is_named_app_dot_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "x.shipped.json"
+            p.write_text(json.dumps({"name": "x.other", "version": "1", "process": "x", "app_path": "/X.app",
+                                     "hotkey": "ralt"}))
+            with self.assertRaisesRegex(ValueError, "name must be"):
+                hn.load_app(p)
+            q = pathlib.Path(d) / "x.fast.json"
+            q.write_text(p.read_text().replace("x.other", "x.fast"))
+            with self.assertRaisesRegex(ValueError, "profile"):
+                hn.load_app(q)
+
     def test_every_checked_in_app_config_loads(self):
         for path in sorted((HERE / "apps").glob("*.json")):
             app = hn.load_app(path)
@@ -104,6 +122,28 @@ class ClipTests(unittest.TestCase):
         self.assertEqual((res.status, res.transcript), ("late", REF))
         self.assertIsNone(res.e2t_s)
 
+    def test_a_paste_just_after_the_deadline_earns_nothing(self):
+        clock, app, drv, tgt = rig(latency=30.001)  # pastes 1 ms after stop + 30 s
+        res = hn.run_clip(clip(), drv, tgt, clock, hn.Timing())
+        self.assertEqual((res.status, res.post_stop_s), ("late", None))
+
+    def test_a_read_that_straddles_the_deadline_is_dropped(self):
+        def run(latency):
+            clock, app, drv, tgt = rig(latency=latency)
+            stop = {}
+            release = drv.release
+            drv.release = lambda: stop.setdefault("t", release())
+
+            class Straddling(hn.StubTarget):
+                def read(self):  # the read that starts in the last 0.1 s ends at stop + 30.05
+                    if "t" in stop and 29.9 <= clock.now() - stop["t"] < 30:
+                        clock.sleep(stop["t"] + 30.05 - clock.now())
+                    return super().read()
+            return hn.run_clip(clip(), drv, Straddling(app), clock, hn.Timing())
+        res = run(30.02)  # pasted 20 ms after the deadline, seen only by the straddling read
+        self.assertEqual((res.status, res.post_stop_s), ("late", None))
+        self.assertEqual(run(29.5).status, "partial")  # pasted before: counts (still settling at the deadline)
+
     def test_text_still_changing_at_the_deadline_is_partial(self):
         clock, app, drv, tgt = rig(latency=4.0, paste_in_chunks=40)  # 40 pieces 0.1 s apart from 4 s
         res = hn.run_clip(clip(), drv, tgt, clock, hn.Timing(timeout=5, settle=2))
@@ -119,6 +159,18 @@ class ClipTests(unittest.TestCase):
         clock, app, _, tgt = rig(open_delay=1.5)
         res = hn.run_clip(clip(), Blind(app), tgt, clock, hn.Timing())
         self.assertTrue(REF.startswith(res.transcript) and res.transcript != REF)
+
+    def test_text_that_stopped_changing_before_the_speech_ended_isnt_this_clips(self):
+        class Stale(hn.StubTarget):  # another app's paste, there from the start of playback, never changing
+            def read(self):
+                return "an earlier dictation" if drv.played else ""
+        clock, app, drv, _ = rig()
+        played = drv.play
+        drv.played = False
+        drv.play = lambda c: (setattr(drv, "played", True), played(c))[1]
+        with self.assertRaises(hn.InfraError) as e:
+            hn.run_clip(clip(ref=""), drv, Stale(app), clock, hn.Timing())
+        self.assertEqual(e.exception.status, "err_stale")
 
     def test_a_microphone_that_never_opens_is_an_infrastructure_fault(self):
         clock, app, drv, tgt = rig(never_opens=True)
@@ -149,6 +201,11 @@ class RunTests(unittest.TestCase):
         self.out = self.out.with_name("run2")
         rows = self.run_all([clip(2)], r, fp="f2")
         self.assertEqual((rows["c2"]["status"], rows["c2"]["attempts"]), ("err_ready", 3))
+
+    def test_any_app_is_restarted_after_an_outcome_that_isnt_ok(self):
+        r = rig(latency=50.0)  # a hold app: empty, its paste still pending
+        self.run_all([clip(1)], r, hn.Timing(timeout=5, quiet=1))
+        self.assertEqual(r[1].restarts, 1)
 
     def test_a_toggle_app_is_restarted_after_an_unclear_outcome(self):
         r = rig(latency=50.0)
@@ -182,6 +239,15 @@ class RunTests(unittest.TestCase):
         hn.write_rows(self.out / "results.csv", {"a": {"clip_id": "c1"}, "b": {"clip_id": "c1"}})
         with self.assertRaises(SystemExit):
             hn.load_rows(self.out / "results.csv")
+
+    def test_the_apps_peak_memory_goes_into_run_json(self):
+        clock, app, drv, tgt = rig()
+        readings = iter([300.0, 512.5, 400.0])
+        drv.rss_mb = lambda: next(readings)
+        clips = [clip(1), clip(2), clip(3)]
+        hn.run_all(clips, drv, tgt, clock, hn.Timing(), self.out, run={"fingerprint": "f", "clip_ids": ["c1", "c2", "c3"]},
+                   restart_after_ambiguous=False, **QUIET)
+        self.assertEqual(json.loads((self.out / "run.json").read_text())["peak_rss_mb"], 512.5)
 
     def test_run_json_records_the_run(self):
         self.run_all([clip(1)], rig())

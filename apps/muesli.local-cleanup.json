@@ -1,0 +1,52 @@
+{
+  "name": "muesli.local-cleanup",
+  "version": "0.8.6",
+  "process": "Muesli",
+  "app_path": "/Applications/Muesli.app",
+  "hotkey": "ralt",
+  "mode": "hold",
+  "release": {
+    "url": "https://github.com/Muesli-HQ/muesli/releases/download/v0.8.6/Muesli-0.8.6.dmg",
+    "sha256": "673b182fd75953fb48939af61db5f853c946e9c96ae65b6d75f100b0c1df7cf0",
+    "tag": "v0.8.6",
+    "commit": "ecc2af2654"
+  },
+  "model": {
+    "id": "Parakeet Unified EN 0.6B, Core ML (onboarding default)",
+    "size_mb": 565,
+    "backend": "FluidAudio Core ML",
+    "files": [
+      "~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b-coreml",
+      "~/.cache/muesli/models/postproc-qwen35-postproc-v4"
+    ],
+    "cleanup_model": "muesli Cleanup Lite (qwen35-postproc-v4, Qwen 3.5 0.8B v14, MLX)"
+  },
+  "language": "en",
+  "cleanup": "on (muesli Cleanup Lite: fine-tuned Qwen 3.5 0.8B, on device)",
+  "notes": "ASR held at the shipped model; Muesli's own on-device cleanup (the default post-processor, local backend).",
+  "hosted_setup": false,
+  "settings_files": [
+    "~/Library/Application Support/Muesli/config.json"
+  ],
+  "logs": "unified:Muesli:",
+  "settings": {
+    "has_completed_onboarding": true,
+    "enable_post_processor": true,
+    "post_processor_backend": "local",
+    "active_post_processor_id": "qwen35-postproc-v4"
+  },
+  "state": {
+    "paths": [
+      "~/Library/Application Support/Muesli",
+      "~/Library/Application Support/FluidAudio",
+      "~/.cache/muesli",
+      "~/Library/Caches/com.muesli.app"
+    ],
+    "defaults": [
+      "com.muesli.app"
+    ]
+  },
+  "settings_source": {
+    "file": "~/Library/Application Support/Muesli/config.json"
+  }
+}

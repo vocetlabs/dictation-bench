@@ -1,0 +1,50 @@
+{
+  "name": "handy.shipped",
+  "version": "0.10.1",
+  "process": "handy",
+  "app_path": "/Applications/Handy.app",
+  "hotkey": "lalt+space",
+  "mode": "hold",
+  "release": {
+    "url": "https://github.com/cjpais/Handy/releases/download/v0.10.1/Handy_0.10.1_aarch64.dmg",
+    "sha256": "7cdef5de7d1bfcea70813320b897540cbead2190f5280db6d9760a59e5995463",
+    "tag": "v0.10.1",
+    "commit": "aca8985190"
+  },
+  "model": {
+    "id": "Parakeet Unified EN 0.6B, Q8_0 GGUF",
+    "size_mb": 731,
+    "backend": "GGUF on Metal",
+    "files": [
+      "~/.cache/huggingface/hub/models--handy-computer--parakeet-unified-en-0.6b-gguf/snapshots/7e948f21b7bdbac698d3318db9d350f1096f3b6c/parakeet-unified-en-0.6b-Q8_0.gguf"
+    ]
+  },
+  "language": "en",
+  "cleanup": "off",
+  "notes": "Onboarding default: the catalogue's first recommended English model; activation hold-or-toggle (a hold past the threshold is push-to-talk). Handy's rule-based filler-word removal is on by default (no LLM).",
+  "hosted_setup": true,
+  "settings_files": [
+    "~/Library/Application Support/com.pais.handy/settings_store.json"
+  ],
+  "logs": "~/Library/Logs/com.pais.handy/*.log",
+  "hybrid": true,
+  "settings": {
+    "selected_model": "handy-computer/parakeet-unified-en-0.6b-gguf/parakeet-unified-en-0.6b-Q8_0.gguf",
+    "selected_language": "en"
+  },
+  "state": {
+    "paths": [
+      "~/Library/Application Support/com.pais.handy",
+      "~/Library/Logs/com.pais.handy",
+      "~/Library/Caches/com.pais.handy",
+      "~/Library/WebKit/com.pais.handy"
+    ],
+    "defaults": [
+      "com.pais.handy"
+    ]
+  },
+  "settings_source": {
+    "file": "~/Library/Application Support/com.pais.handy/settings_store.json",
+    "key": "settings"
+  }
+}

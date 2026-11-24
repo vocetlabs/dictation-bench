@@ -175,4 +175,6 @@ def table(scores: list[dict]) -> str:
         acc += "\nJudge metrics (ZER, AMEND): not computed (no key).\n"
     timed = [r for r in rows if r.get("timed")]
     speed = md(timed, COLS[:6] + COLS[8:]) if timed else "(no timed runs)\n"
-    return f"Accuracy (WER %, lower is better)\n\n{acc}\nSpeed (seconds; timed runs only)\n\n{speed}"
+    from report import DISCLOSURE
+    return (f"Accuracy (WER %, lower is better)\n\n{acc}\n{DISCLOSURE}\n\n"
+            f"Speed (seconds over ok clips; timed runs only)\n\n{speed}\n{DISCLOSURE}\n")

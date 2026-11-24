@@ -1,0 +1,50 @@
+{
+  "name": "handy.best-asr",
+  "version": "0.10.1",
+  "process": "handy",
+  "app_path": "/Applications/Handy.app",
+  "hotkey": "lalt+space",
+  "mode": "hold",
+  "release": {
+    "url": "https://github.com/cjpais/Handy/releases/download/v0.10.1/Handy_0.10.1_aarch64.dmg",
+    "sha256": "7cdef5de7d1bfcea70813320b897540cbead2190f5280db6d9760a59e5995463",
+    "tag": "v0.10.1",
+    "commit": "aca8985190"
+  },
+  "model": {
+    "id": "Qwen3-ASR 1.7B, Q8_0 GGUF",
+    "size_mb": 2084,
+    "backend": "GGUF on Metal",
+    "files": [
+      "~/.cache/huggingface/hub/models--handy-computer--Qwen3-ASR-1.7B-gguf/snapshots/92282af1610a2db19d66f2bef1e260f5deca782d/Qwen3-ASR-1.7B-Q8_0.gguf"
+    ]
+  },
+  "language": "en",
+  "cleanup": "off",
+  "notes": "Maintainer-recommended local ASR for accuracy: the catalogue describes Qwen3-ASR 1.7B as 'Top accuracy across languages. Best on Apple Silicon' and it has the lowest English error among curated models (FLEURS en 3.23%) within the catalogue's 10 s wait for its 'More accurate' pick. Cleanup off.",
+  "hosted_setup": true,
+  "settings_files": [
+    "~/Library/Application Support/com.pais.handy/settings_store.json"
+  ],
+  "logs": "~/Library/Logs/com.pais.handy/*.log",
+  "hybrid": true,
+  "settings": {
+    "selected_model": "handy-computer/Qwen3-ASR-1.7B-gguf/Qwen3-ASR-1.7B-Q8_0.gguf",
+    "selected_language": "en"
+  },
+  "state": {
+    "paths": [
+      "~/Library/Application Support/com.pais.handy",
+      "~/Library/Logs/com.pais.handy",
+      "~/Library/Caches/com.pais.handy",
+      "~/Library/WebKit/com.pais.handy"
+    ],
+    "defaults": [
+      "com.pais.handy"
+    ]
+  },
+  "settings_source": {
+    "file": "~/Library/Application Support/com.pais.handy/settings_store.json",
+    "key": "settings"
+  }
+}

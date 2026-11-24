@@ -19,6 +19,8 @@ Outcomes. App outcomes are final on the first attempt (no rerunning an app until
 Infrastructure faults are retried (up to `attempts`), each after the app is made idle again:
   err_target  the document lost the front or couldn't be emptied     err_read   Accessibility read failed
   err_audio   playback failed                                         err_ready  no process opened the mic
+  err_stale   the text stopped changing before the clip's speech ended (negative e2t: not this clip's
+              dictation, e.g. another app's or a previous clip's paste)
 
 After anything but `ok` the harness waits a quiet period and makes the app idle (releases the key; a
 toggle app, whose recording state is then unknown, is restarted), so a late paste can't land in the next
@@ -36,12 +38,12 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
-HARNESS_VERSION = "2"
+HARNESS_VERSION = "4"
 
 FIELDS = ["clip_id", "status", "attempts", "transcript", "audio_s", "speech_end_s", "ready_s", "e2t_s",
           "post_stop_s", "first_text_s", "error", "run_at"]
 APP_OUTCOMES = ("ok", "partial", "empty", "late")
-INFRA_ERRORS = ("err_target", "err_read", "err_audio", "err_ready")
+INFRA_ERRORS = ("err_target", "err_read", "err_audio", "err_ready", "err_stale")
 
 
 # --- Keys --------------------------------------------------------------------------------------------
@@ -136,6 +138,29 @@ class App:
     logs: str = ""                                # the app's log files (glob), shown when the smoke test fails
     log_counts: str = ""                          # a regex with one group: its values in the app's log are
                                                   #   counted over the run (numbers only, never the lines)
+    settings: dict = field(default_factory=dict)  # what the profile sets (CONFIGS.md), recorded in run.json
+    same_as: str = ""                             # this profile is that profile's configuration: not run twice
+    na: str = ""                                  # why the app has no such profile ("n/a" in the tables)
+    verify: str = ""                              # what the Lead still checks in a VM before a scored run
+    state: dict = field(default_factory=dict)     # {paths, defaults}: the app's data and preference domains,
+                                                  #   set aside on a host run and put back exactly
+    settings_source: dict = field(default_factory=dict)  # {file[, key]} or {defaults}: where the app keeps
+                                                  #   `settings`, read back before a run is scored
+    absent_files: list = field(default_factory=list)  # files the profile requires to be missing (checked)
+
+    @property
+    def base(self) -> str:
+        """The app, without the profile: handy for handy.shipped."""
+        return self.name.split(".", 1)[0]
+
+    @property
+    def profile(self) -> str:
+        return self.name.split(".", 1)[1] if "." in self.name else "shipped"
+
+    @property
+    def group(self) -> str:
+        """The headline's two groups: raw speech, or speech with the app's local cleanup."""
+        return "raw speech" if self.cleanup == "off" else "speech + local cleanup"
 
     def __post_init__(self) -> None:
         parse_hotkey(self.hotkey)
@@ -151,7 +176,12 @@ def restarts_after_unclear(app: App) -> bool:
 
 
 def load_app(path: pathlib.Path) -> App:
-    return App(**json.loads(path.read_text()))
+    app = App(**json.loads(path.read_text()))
+    if app.name != path.stem:
+        raise ValueError(f"{path.name}: name must be {path.stem}")
+    if app.profile not in PROFILES:
+        raise ValueError(f"{path.name}: profile must be one of {PROFILES} (apps/<app>.<profile>.json)")
+    return app
 
 
 # --- Clips -------------------------------------------------------------------------------------------
@@ -206,9 +236,14 @@ class Timing:
     timed: bool = True         # False: accuracy only (a machine whose speed doesn't count)
 
 
+PROFILES = ("shipped", "best-asr", "local-cleanup")
+
+
 def accuracy_only() -> Timing:
-    """Same audio, hold and tail; a longer wait for text, so a slow machine costs time, not accuracy."""
-    return Timing(settle=3.0, timeout=60.0, quiet=10.0, timed=False)
+    """The same protocol as every run (Voice Arena's timing: 300 ms padding, 0.5 s start delay, 4 s tail,
+    2 s settle, 30 s from the release); only the latency isn't reported, for a machine whose speed doesn't
+    count (a CI runner)."""
+    return Timing(timed=False)
 
 
 class InfraError(Exception):
@@ -260,6 +295,9 @@ class Driver:
         raise NotImplementedError
     def recover(self, restart: bool) -> None:
         """Make the app idle: release any held key; restart=True restarts the app."""
+    def rss_mb(self) -> float | None:
+        """The app's resident memory now (its process and their children), in MB; None if unknown."""
+        return None
 
 
 @dataclass
@@ -324,18 +362,30 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
     if not target.verify():
         raise InfraError("err_target", "the document lost the front while dictating")
     status = "empty"
+    deadline = t_stop + timing.timeout
     while True:
-        poll()
-        now = clock.now()
-        if text.strip() and now - last >= timing.settle:
-            status = "ok"
-            break
-        if now - t_stop >= timing.timeout:
+        # Frozen at the deadline: a read must start before it and complete by it, or it doesn't count (a
+        # slow read that straddles the deadline could otherwise pick up a late paste).
+        if clock.now() >= deadline:
             status = "partial" if text.strip() else "empty"
+            break
+        cur = target.read()
+        if clock.now() > deadline:
+            status = "partial" if text.strip() else "empty"
+            break
+        if cur != text:
+            text, last = cur, clock.now()
+            if first is None and cur.strip():
+                first = last
+        if text.strip() and clock.now() - last >= timing.settle:
+            status = "ok"
             break
         clock.sleep(timing.poll)
     if not target.verify():
         raise InfraError("err_target", "the document lost the front while waiting for text")
+    if status in ("ok", "partial") and last < end_of_speech:
+        raise InfraError("err_stale", f"the text last changed {end_of_speech - last:.2f} s before the clip's speech "
+                                      "ended (negative e2t): not this clip's dictation")
     res = Result(status, text.strip(), ready_s=_r(ready), speech_end_s=_r(clip.speech_end_s))
     if status in ("ok", "partial"):
         res.e2t_s, res.post_stop_s = _r(last - end_of_speech), _r(last - t_stop)
@@ -408,6 +458,7 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
     wanted = {c.clip_id for c in clips}
     rows = {k: v for k, v in load_rows(rows_path).items() if k in wanted}
     write_rows(rows_path, rows)
+    peak = float(json.loads(meta_path.read_text()).get("peak_rss_mb") or 0)
     for i, clip in enumerate(clips, 1):
         if rows.get(clip.clip_id, {}).get("status") in APP_OUTCOMES:
             continue
@@ -419,8 +470,9 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
                 res = Result(e.status, error=str(e))
             if res.status == "ok":
                 break
-            ambiguous_toggle = restart_after_ambiguous and res.status != "ok"
-            driver.recover(restart=ambiguous_toggle or res.status in ("partial", "late"))
+            # Any outcome but ok restarts the app, whatever its mode: a paste still pending (an empty hold
+            # app can paste after the quiet period) dies with it instead of landing in the next clip.
+            driver.recover(restart=True)
             if res.status in APP_OUTCOMES:
                 break
             clock.sleep(timing.gap)
@@ -430,6 +482,12 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
             "e2t_s": fmt(res.e2t_s), "post_stop_s": fmt(res.post_stop_s), "first_text_s": fmt(res.first_text_s),
             "error": res.error, "run_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
         write_rows(rows_path, rows)
+        rss = driver.rss_mb()
+        if rss and rss > peak:  # the app's peak resident memory over the run, sampled after each clip
+            peak = rss
+            meta = json.loads(meta_path.read_text())
+            meta["peak_rss_mb"] = round(peak, 1)
+            meta_path.write_text(json.dumps(meta, indent=1, sort_keys=True) + "\n")
         log(f"[{i}/{len(clips)}] {clip.clip_id} {res.status} tries={tries} e2t={fmt(res.e2t_s)} "
             f"chars={len(res.transcript)} {res.error}")
         clock.sleep(timing.gap)

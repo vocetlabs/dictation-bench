@@ -1,5 +1,5 @@
 {
-  "name": "openwhispr",
+  "name": "openwhispr.shipped",
   "version": "1.12.0",
   "process": "OpenWhispr",
   "app_path": "/Applications/OpenWhispr.app",
