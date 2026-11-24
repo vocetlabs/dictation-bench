@@ -235,11 +235,55 @@ class RunTests(unittest.TestCase):
                        refusal_text=["your trial has ended"], **QUIET)
         self.assertEqual(hn.load_rows(self.out / "results.csv")["c1"]["status"], "refused")
 
-    def test_a_standalone_voiceink_setup_never_starts_it_on_a_host(self):
+    def test_a_notice_replaced_during_the_quiet_period_is_still_refused(self):
+        def rig_flash():  # still pasting at the deadline; the notice shows for 1 s of the quiet period, then goes
+            clock, app, drv, tgt = rig(latency=4.0, paste_in_chunks=40)
+            stop = {}
+            release = drv.release
+            drv.release = lambda: stop.setdefault("t", release())
+
+            class Flash(hn.StubTarget):
+                def read(self):
+                    base = super().read()
+                    return base + " your trial has ended" if "t" in stop and 6 <= clock.now() - stop["t"] < 7 else base
+            return clock, app, drv, Flash(app)
+        timing = hn.Timing(timeout=5, settle=2, quiet=5)
+        clock, app, drv, tgt = rig_flash()
+        res = hn.run_clip(clip(), drv, tgt, clock, timing)
+        self.assertEqual(res.status, "partial")
+        self.assertNotIn("trial", res.transcript)
+        self.assertIn("your trial has ended", res.seen)
+        r = rig_flash()
+        with self.assertRaises(hn.AppRefused):
+            hn.run_all([clip(1)], r[2], r[3], r[0], timing, self.out, run={"fingerprint": "f1", "clip_ids": ["c1"]},
+                       restart_after_ambiguous=False, refusal_text=["your trial has ended"], **QUIET)
+        self.assertEqual(hn.load_rows(self.out / "results.csv")["c1"]["status"], "refused")
+
+    def voiceink_gate(self, env: dict, gate_file: str | None, vm: bool) -> bool:
+        """Runs voiceink.sh's launch gate with `start` and `sysctl` stubbed: whether it would start VoiceInk."""
+        import subprocess
         script = (HERE / "apps" / "voiceink.sh").read_text()
-        gate = 'if [ -n "${BENCH_HOST_RUN:-}" ] || [ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" = 1 ]; then\n' \
-               '  start VoiceInk.app VoiceInk\n'
-        self.assertIn(gate, script)
+        block = script[script.index('gate="$BENCH_ROOT/work/host-run.gate"'):].split("\nfi\n")[0] + "\nfi\n"
+        with tempfile.TemporaryDirectory() as d:
+            (pathlib.Path(d) / "work").mkdir()
+            if gate_file is not None:
+                (pathlib.Path(d) / "work" / "host-run.gate").write_text(gate_file)
+            stub = (f'start() {{ echo STARTED; }}; log() {{ :; }}; sysctl() {{ echo {1 if vm else 0}; }}; '
+                    f'BENCH_ROOT="{d}"\n')
+            env = {"PATH": "/usr/bin:/bin", **env}
+            out = subprocess.run(["bash", "-c", stub + block], capture_output=True, text=True, env=env)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return "STARTED" in out.stdout
+
+    def test_voiceink_starts_only_with_host_runs_own_nonce_or_bench_ci_in_a_vm(self):
+        self.assertTrue(self.voiceink_gate({"BENCH_HOST_RUN": "abc123"}, "abc123", vm=False))
+        self.assertFalse(self.voiceink_gate({"BENCH_HOST_RUN": "1"}, None, vm=False))       # any value: not enough
+        self.assertFalse(self.voiceink_gate({"BENCH_HOST_RUN": "1"}, "abc123", vm=False))   # not host-run's nonce
+        self.assertFalse(self.voiceink_gate({}, "abc123", vm=False))
+        self.assertFalse(self.voiceink_gate({}, None, vm=True))                             # a VM without BENCH_CI
+        self.assertFalse(self.voiceink_gate({"BENCH_CI": "1"}, None, vm=False))              # BENCH_CI on a host
+        self.assertTrue(self.voiceink_gate({"BENCH_CI": "1"}, None, vm=True))
+        script = (HERE / "apps" / "voiceink.sh").read_text()
         self.assertEqual(script.count("start VoiceInk.app"), 1)
         self.assertNotIn("open ", script)
 

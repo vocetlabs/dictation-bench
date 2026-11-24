@@ -102,9 +102,10 @@ date goes into the login Keychain of the account it runs in, which the bench nev
 paste starts with "Your trial has ended. Upgrade to VoiceInk Pro..." A paste holding that notice
 (`refusal_text`) at any point, including the quiet period after a partial paste, records the clip as
 `refused`, which no score accepts, and stops the run (a smoke test that shows it stops too). All smoke tests
-and pre-night checks happen in the VM: `./bench setup --app voiceink` on its own never launches VoiceInk on
-a Mac that isn't a virtual machine; on the host, only `host-run` (in the bench account) launches it, first on
-its first night, so its three nights fall inside the trial.
+and pre-night checks happen in the VM, where `BENCH_CI=1 ./bench setup --app voiceink...` launches it. Any
+other setup never launches VoiceInk: on the host only `host-run` (in the bench account) does, through a nonce
+file it creates and deletes itself (`work/host-run.gate`), first on its first night, so its three nights fall
+inside the trial.
 
 ## The bench Mac (host runs)
 

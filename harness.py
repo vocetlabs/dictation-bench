@@ -324,7 +324,7 @@ class Result:
     post_stop_s: float | None = None
     first_text_s: float | None = None
     error: str = ""
-    seen: str = ""  # all the document showed during the attempt, quiet period included (refusal check only)
+    seen: str = ""  # every text the document showed during the attempt, quiet period included (refusal check only)
 
 
 def _r(x: float | None) -> float | None:
@@ -351,12 +351,14 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
     clock.sleep(timing.start_delay)
 
     text, first, last = "", None, None
+    snapshots: list[str] = []  # every distinct text the document showed, in order (the refusal check reads all)
 
     def poll() -> None:
         nonlocal text, first, last
         cur = target.read()
         if cur != text:
             text, last = cur, clock.now()
+            snapshots.append(cur)
             if first is None and cur.strip():
                 first = last
 
@@ -375,7 +377,7 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
         clock.sleep(timing.poll)
     t_stop = driver.release()
     if not target.verify():
-        raise InfraError("err_target", "the document lost the front while dictating", seen=text)
+        raise InfraError("err_target", "the document lost the front while dictating", seen="\n".join(snapshots))
     status = "empty"
     deadline = t_stop + timing.timeout
     while True:
@@ -390,6 +392,7 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
             break
         if cur != text:
             text, last = cur, clock.now()
+            snapshots.append(cur)
             if first is None and cur.strip():
                 first = last
         if text.strip() and clock.now() - last >= timing.settle:
@@ -397,10 +400,10 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
             break
         clock.sleep(timing.poll)
     if not target.verify():
-        raise InfraError("err_target", "the document lost the front while waiting for text", seen=text)
+        raise InfraError("err_target", "the document lost the front while waiting for text", seen="\n".join(snapshots))
     if status in ("ok", "partial") and last < end_of_speech:
         raise InfraError("err_stale", f"the text last changed {end_of_speech - last:.2f} s before the clip's speech "
-                                      "ended (negative e2t): not this clip's dictation", seen=text)
+                                      "ended (negative e2t): not this clip's dictation", seen="\n".join(snapshots))
     res = Result(status, text.strip(), ready_s=_r(ready), speech_end_s=_r(clip.speech_end_s))
     if status in ("ok", "partial"):
         res.e2t_s, res.post_stop_s = _r(last - end_of_speech), _r(last - t_stop)
@@ -418,7 +421,7 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
             res.error = "text still changing at the deadline" + (" and after it" if text != before else "")
         else:
             res.error = f"no text within {timing.timeout:g} s of the release"
-    res.seen = text
+    res.seen = "\n".join(snapshots)
     return res
 
 
