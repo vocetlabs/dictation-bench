@@ -40,7 +40,8 @@ After that, any change gets a dated entry below and the affected configurations 
   and settings files (their sha256).
 - **Separate columns:** spoken-text WER, intended-text WER, ZER, AMEND, failure rate, p50 and p95 latency,
   peak resident memory (the app and its child processes, sampled after each clip) and model disk size.
-- **Infrastructure faults** (focus lost, a failed read, playback, no microphone) are retried up to 3 times;
+- **Infrastructure faults** (focus lost, a failed read, playback, no microphone, text that stopped changing
+  before the clip's speech ended: a negative e2t means another paste) are retried up to 3 times;
   app outcomes never are.
 
 ## Profiles

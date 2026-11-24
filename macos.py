@@ -273,6 +273,19 @@ def foreign_copies(rows: list[tuple[int, int, str]], names: set[str], prefix: st
     return sorted({exe for _, _, exe in rows if os.path.basename(exe) in names and not exe.startswith(prefix)})
 
 
+def other_apps(rows: list[tuple[int, int, str]], own: str, names: set[str], bench_prefix: str) -> list[str]:
+    """Running executables, other than the app under test (`own`, its bench bundle), that are another app from
+    the bench's folder or carry a benchmarked app's process name (a copy anywhere else)."""
+    return sorted({exe for _, _, exe in rows if not exe.startswith(own)
+                   and (exe.startswith(bench_prefix) or os.path.basename(exe) in names)})
+
+
+def benchmarked_names() -> set[str]:
+    import json
+    here = pathlib.Path(__file__).resolve().parent / "apps"
+    return {n for p in here.glob("*.*.json") if (n := json.loads(p.read_text()).get("process"))}
+
+
 def quit_tree(prefix: str, rows=None, kill=os.kill, wait: float = 10.0) -> None:
     """Quits the processes launched from `prefix` (a bench bundle or the bench's app folder) by PID: TERM,
     then KILL; never by process name, so a same-named copy elsewhere is left alone."""
@@ -462,6 +475,9 @@ def preflight(app: App) -> dict:
     if not bundle_pids(app):
         raise SystemExit(f"{app.process} isn't running from the bench's copy ({bundle(app)}): "
                          f"./bench setup --app {app.name}")
+    if others := other_apps(_paths(), str(bundle(app)) + "/Contents/", benchmarked_names(), str(apps_dir()) + "/"):
+        raise SystemExit("other benchmarked apps are running (they would paste into, or listen during, this run): "
+                         "quit them first:\n  " + "\n  ".join(others))
     exe = binary_path(app)
     env["binary_sha256"] = sha256_file(exe) if exe else ""
     return env

@@ -19,6 +19,8 @@ Outcomes. App outcomes are final on the first attempt (no rerunning an app until
 Infrastructure faults are retried (up to `attempts`), each after the app is made idle again:
   err_target  the document lost the front or couldn't be emptied     err_read   Accessibility read failed
   err_audio   playback failed                                         err_ready  no process opened the mic
+  err_stale   the text stopped changing before the clip's speech ended (negative e2t: not this clip's
+              dictation, e.g. another app's or a previous clip's paste)
 
 After anything but `ok` the harness waits a quiet period and makes the app idle (releases the key; a
 toggle app, whose recording state is then unknown, is restarted), so a late paste can't land in the next
@@ -41,7 +43,7 @@ HARNESS_VERSION = "3"
 FIELDS = ["clip_id", "status", "attempts", "transcript", "audio_s", "speech_end_s", "ready_s", "e2t_s",
           "post_stop_s", "first_text_s", "error", "run_at"]
 APP_OUTCOMES = ("ok", "partial", "empty", "late")
-INFRA_ERRORS = ("err_target", "err_read", "err_audio", "err_ready")
+INFRA_ERRORS = ("err_target", "err_read", "err_audio", "err_ready", "err_stale")
 
 
 # --- Keys --------------------------------------------------------------------------------------------
@@ -381,6 +383,9 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
         clock.sleep(timing.poll)
     if not target.verify():
         raise InfraError("err_target", "the document lost the front while waiting for text")
+    if status in ("ok", "partial") and last < end_of_speech:
+        raise InfraError("err_stale", f"the text last changed {end_of_speech - last:.2f} s before the clip's speech "
+                                      "ended (negative e2t): not this clip's dictation")
     res = Result(status, text.strip(), ready_s=_r(ready), speech_end_s=_r(clip.speech_end_s))
     if status in ("ok", "partial"):
         res.e2t_s, res.post_stop_s = _r(last - end_of_speech), _r(last - t_stop)
