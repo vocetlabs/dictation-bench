@@ -123,8 +123,8 @@ configuration as another (then it isn't run twice). [CONFIGS.md](CONFIGS.md) lis
 ./bench judge-check out/host/<stamp>/pass1/*                          # a second judge (JUDGE_API_KEY)
 ```
 
-The owner's data stays in their own account: `host-run` refuses to start as any user but `BENCH_USER`
-(default `vocetbench`) or as an administrator. Apps go into the bench's own folder and are quit by PID, never
+The owner's data stays in their own account: `host-run` refuses to start as any user but `vocetbench`
+(no override) or as an administrator. Apps go into the bench's own folder and are quit by PID, never
 from `/Applications`; each job clears the app's state in the bench account and sets it up afresh; see
 [CONFIGS.md](CONFIGS.md). Close TextEdit first. `./bench restore-host` puts the input device back if a run is
 cut off. `host-run` refuses to start while a virtual machine runs, logs the load average before and after each job,

@@ -286,13 +286,19 @@ def benchmarked_names() -> set[str]:
     return {n for p in here.glob("*.*.json") if (n := json.loads(p.read_text()).get("process"))}
 
 
+def launched_from(rows: list[tuple[int, int, str]], prefix: str) -> set[int]:
+    """PIDs of the processes whose own executable lies inside `prefix` (no descendants from elsewhere)."""
+    return {pid for pid, _, exe in rows if exe.startswith(prefix)}
+
+
 def quit_tree(prefix: str, rows=None, kill=os.kill, wait: float = 10.0) -> None:
-    """Quits the processes launched from `prefix` (a bench bundle or the bench's app folder) by PID: TERM,
-    then KILL; never by process name, so a same-named copy elsewhere is left alone."""
+    """Quits the processes whose executable lies inside `prefix` (a bench bundle or the bench's app folder) by
+    PID: TERM, then KILL. Never by process name, and never a process whose executable is elsewhere, even a
+    descendant of a bench app (an /Applications copy it opened stays untouched)."""
     import signal
     rows = rows or _paths
     for sig, timeout in ((signal.SIGTERM, wait), (signal.SIGKILL, 5.0)):
-        pids = tree_under(rows(), prefix)
+        pids = launched_from(rows(), prefix)
         if not pids:
             return
         for pid in pids:
@@ -301,7 +307,7 @@ def quit_tree(prefix: str, rows=None, kill=os.kill, wait: float = 10.0) -> None:
             except ProcessLookupError:
                 pass
         for _ in range(max(1, int(timeout / 0.2))):
-            if not tree_under(rows(), prefix) & pids:
+            if not launched_from(rows(), prefix) & pids:
                 return
             time.sleep(0.2)
     raise SystemExit(f"processes from {prefix} won't quit")

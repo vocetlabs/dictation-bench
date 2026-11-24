@@ -21,21 +21,16 @@ import isolation as iso  # noqa: E402
 
 class AccountTests(unittest.TestCase):
     def test_host_runs_only_as_the_bench_user_and_never_as_an_admin(self):
-        old = os.environ.pop("BENCH_USER", None)
+        os.environ["BENCH_USER"] = "owner"  # no override: the environment can't name another account
         try:
             iso.check_bench_account("vocetbench", {"staff", "everyone"})
-            with self.assertRaisesRegex(SystemExit, "only in the bench's own macOS account"):
-                iso.check_bench_account("owner", {"staff"})
+            for name in ("owner", "otherbench"):
+                with self.assertRaisesRegex(SystemExit, "only in the bench's own macOS account 'vocetbench'"):
+                    iso.check_bench_account(name, {"staff"})
             with self.assertRaisesRegex(SystemExit, "administrator"):
                 iso.check_bench_account("vocetbench", {"staff", "admin"})
-            os.environ["BENCH_USER"] = "otherbench"
-            iso.check_bench_account("otherbench", {"staff"})
-            with self.assertRaises(SystemExit):
-                iso.check_bench_account("vocetbench", {"staff"})
         finally:
-            os.environ.pop("BENCH_USER", None)
-            if old is not None:
-                os.environ["BENCH_USER"] = old
+            del os.environ["BENCH_USER"]
 
     def test_host_run_and_restore_host_check_the_account_first(self):
         orig = iso.check_bench_account
@@ -50,6 +45,85 @@ class AccountTests(unittest.TestCase):
                 bench.main(["host-run", "--jobs", "handy:shipped"])
         finally:
             iso.check_bench_account = orig
+
+
+class BenchDirTests(unittest.TestCase):
+    """No symlink can point the installer's delete and copy at /Applications."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = pathlib.Path(self.tmp.name).resolve() / "home"
+        self.bench = self.home / "bench"
+        (self.bench / "apps").mkdir(parents=True)
+        self.elsewhere = pathlib.Path(self.tmp.name).resolve() / "Applications"
+        self.elsewhere.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_python_refuses_a_symlinked_work_or_app_folder_or_one_outside_home(self):
+        iso.check_bench_dirs(self.bench, home=str(self.home))
+        (self.bench / "work").symlink_to(self.elsewhere)
+        with self.assertRaisesRegex(SystemExit, "symlink"):
+            iso.check_bench_dirs(self.bench, home=str(self.home))
+        (self.bench / "work").unlink()
+        (self.bench / "work").mkdir()
+        (self.bench / "work" / "Applications").symlink_to(self.elsewhere)
+        with self.assertRaisesRegex(SystemExit, "symlink"):
+            iso.check_bench_dirs(self.bench, home=str(self.home))
+        outside = pathlib.Path(self.tmp.name).resolve() / "other-bench"
+        outside.mkdir()
+        with self.assertRaisesRegex(SystemExit, "isn't inside this account's home"):
+            iso.check_bench_dirs(outside, home=str(self.home))
+
+    def setup_script(self) -> int:
+        import shutil
+        import subprocess
+        shutil.copy(HERE / "apps" / "common.sh", self.bench / "apps" / "common.sh")
+        return subprocess.run(["bash", "-c", ". apps/common.sh"], cwd=self.bench, capture_output=True,
+                              env=dict(os.environ, HOME=str(self.home))).returncode
+
+    def test_setup_refuses_a_symlinked_work_or_app_folder(self):
+        self.assertEqual(self.setup_script(), 0)
+        self.assertTrue((self.bench / "work" / "Applications").is_dir())
+        import shutil
+        shutil.rmtree(self.bench / "work")
+        (self.bench / "work").symlink_to(self.elsewhere)
+        self.assertNotEqual(self.setup_script(), 0)
+        (self.bench / "work").unlink()
+        (self.bench / "work").mkdir()
+        (self.bench / "work" / "Applications").symlink_to(self.elsewhere)
+        self.assertNotEqual(self.setup_script(), 0)
+        self.assertEqual(list(self.elsewhere.iterdir()), [])
+
+    def test_setup_refuses_a_bench_folder_outside_home(self):
+        self.home = pathlib.Path(self.tmp.name).resolve() / "another-home"
+        self.home.mkdir()
+        self.assertNotEqual(self.setup_script(), 0)
+
+
+class RestoreHostTests(unittest.TestCase):
+    def test_apps_are_quit_even_when_the_input_cant_be_put_back(self):
+        import macos
+        with tempfile.TemporaryDirectory() as d:
+            saved = (iso.check_bench_account, iso.check_bench_dirs, macos.restore_input, bench.quit_bench_apps,
+                     bench.MACHINE_FILE, bench.HOST_LOCK, bench.HOST_GATE)
+            quit = []
+            iso.check_bench_account = iso.check_bench_dirs = lambda *a, **k: None
+            macos.restore_input = lambda state: ["the default input: no input device with UID 'x'"]
+            bench.quit_bench_apps = lambda: quit.append(True)
+            bench.MACHINE_FILE, bench.HOST_LOCK = pathlib.Path(d) / "m.json", pathlib.Path(d) / "lock"
+            bench.HOST_GATE = pathlib.Path(d) / "gate"
+            bench.MACHINE_FILE.write_text('{"input_uid": "x", "input": "Mic"}')
+            bench.HOST_GATE.write_text("nonce")
+            try:
+                self.assertEqual(bench.restore_host(), 1)  # the failure is reported
+                self.assertEqual(quit, [True])              # and the apps were still quit
+                self.assertTrue(bench.MACHINE_FILE.exists())
+                self.assertFalse(bench.HOST_GATE.exists())
+            finally:
+                (iso.check_bench_account, iso.check_bench_dirs, macos.restore_input, bench.quit_bench_apps,
+                 bench.MACHINE_FILE, bench.HOST_LOCK, bench.HOST_GATE) = saved
 
 
 class ClearStateTests(unittest.TestCase):
@@ -232,9 +306,10 @@ class QuitTests(unittest.TestCase):
         def kill(pid, sig):
             sent.append((pid, sig))
             rows[:] = [r for r in rows if r[0] != pid]
+        rows.append((40, 10, "/Applications/Other.app/Contents/MacOS/Other"))  # a descendant from elsewhere
         macos.quit_tree("/bench/work/Applications/", rows=lambda: rows, kill=kill)
-        self.assertEqual(sorted(p for p, _ in sent), [10, 11, 12])
-        self.assertEqual([r[0] for r in rows], [20])  # the /Applications copy is untouched
+        self.assertEqual(sorted(p for p, _ in sent), [10, 11])  # executables inside the bench folder only
+        self.assertEqual([r[0] for r in rows], [12, 20, 40])  # /Applications copies never signalled
 
     def test_a_copy_outside_the_bench_folder_is_reported_not_quit(self):
         import macos
@@ -334,6 +409,29 @@ class GrantTests(unittest.TestCase):
             else:
                 os.environ["BENCH_CI"] = orig[3]
         return seen.get("BENCH_CI")
+
+    def test_only_host_run_hands_its_gate_nonce_to_the_setup(self):
+        with tempfile.TemporaryDirectory() as d:
+            a, seen = app(name="x.shipped"), []
+            saved = (bench.app_config, bench.subprocess.run, bench.HOST_GATE)
+            bench.app_config = lambda n: a
+            bench.subprocess.run = lambda cmd, check, env: seen.append(env["BENCH_HOST_RUN"])
+            bench.HOST_GATE = pathlib.Path(d) / "gate"
+            old = os.environ.get("BENCH_HOST_RUN")
+            os.environ["BENCH_HOST_RUN"] = "1"  # inherited: never passed through
+            try:
+                bench.setup("x", ci=False, overwrite=True)
+                bench.setup("x", ci=False, isolated=True)  # no gate file: no nonce
+                bench.HOST_GATE.write_text("abc123\n")
+                bench.setup("x", ci=False, isolated=True)
+                bench.setup("x", ci=False, overwrite=True)  # a standalone setup never gets it
+            finally:
+                bench.app_config, bench.subprocess.run, bench.HOST_GATE = saved
+                if old is None:
+                    os.environ.pop("BENCH_HOST_RUN", None)
+                else:
+                    os.environ["BENCH_HOST_RUN"] = old
+            self.assertEqual(seen, ["", "", "abc123", ""])
 
     def test_an_inherited_bench_ci_grants_in_a_vm_only(self):
         self.assertEqual(self.setup_env(vm=True, env_ci="1"), "1")
