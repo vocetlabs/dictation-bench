@@ -388,6 +388,8 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
             break
         cur = target.read()
         if clock.now() > deadline:
+            if cur != text:  # not scored, but the refusal check still sees it (a notice in it refuses the clip)
+                snapshots.append(cur)
             status = "partial" if text.strip() else "empty"
             break
         if cur != text:

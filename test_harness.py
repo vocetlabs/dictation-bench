@@ -259,33 +259,73 @@ class RunTests(unittest.TestCase):
                        restart_after_ambiguous=False, refusal_text=["your trial has ended"], **QUIET)
         self.assertEqual(hn.load_rows(self.out / "results.csv")["c1"]["status"], "refused")
 
-    def voiceink_gate(self, env: dict, gate_file: str | None, vm: bool) -> bool:
-        """Runs voiceink.sh's launch gate with `start` and `sysctl` stubbed: whether it would start VoiceInk."""
+    def voiceink_gate(self, env: dict, gate_file: str | None, vm: bool, user: str = "vocetbench",
+                      ps_uid: str = "502", ps_cmd: str = "python3 /b/bench.py host-run --jobs x",
+                      symlink: bool = False) -> bool:
+        """Runs voiceink.sh's launch gate with `start`, `sysctl`, `id` and `ps` stubbed: whether it starts VoiceInk."""
         import subprocess
         script = (HERE / "apps" / "voiceink.sh").read_text()
         block = script[script.index('gate="$BENCH_ROOT/work/host-run.gate"'):].split("\nfi\n")[0] + "\nfi\n"
         with tempfile.TemporaryDirectory() as d:
-            (pathlib.Path(d) / "work").mkdir()
+            work = pathlib.Path(d) / "work"
+            work.mkdir()
             if gate_file is not None:
-                (pathlib.Path(d) / "work" / "host-run.gate").write_text(gate_file)
+                real = work / ("elsewhere" if symlink else "host-run.gate")
+                real.write_text(gate_file)
+                if symlink:
+                    (work / "host-run.gate").symlink_to(real)
             stub = (f'start() {{ echo STARTED; }}; log() {{ :; }}; sysctl() {{ echo {1 if vm else 0}; }}; '
+                    f'id() {{ if [ "$1" = -un ]; then echo {user}; else echo 502; fi; }}; '
+                    f'ps() {{ case "$*" in *uid=*) echo " {ps_uid}";; *command=*) echo "{ps_cmd}";; esac; }}; '
                     f'BENCH_ROOT="{d}"\n')
-            env = {"PATH": "/usr/bin:/bin", **env}
-            out = subprocess.run(["bash", "-c", stub + block], capture_output=True, text=True, env=env)
+            out = subprocess.run(["bash", "-c", stub + block], capture_output=True, text=True,
+                                 env={"PATH": "/usr/bin:/bin", **env})
         self.assertEqual(out.returncode, 0, out.stderr)
         return "STARTED" in out.stdout
 
-    def test_voiceink_starts_only_with_host_runs_own_nonce_or_bench_ci_in_a_vm(self):
-        self.assertTrue(self.voiceink_gate({"BENCH_HOST_RUN": "abc123"}, "abc123", vm=False))
-        self.assertFalse(self.voiceink_gate({"BENCH_HOST_RUN": "1"}, None, vm=False))       # any value: not enough
-        self.assertFalse(self.voiceink_gate({"BENCH_HOST_RUN": "1"}, "abc123", vm=False))   # not host-run's nonce
-        self.assertFalse(self.voiceink_gate({}, "abc123", vm=False))
-        self.assertFalse(self.voiceink_gate({}, None, vm=True))                             # a VM without BENCH_CI
-        self.assertFalse(self.voiceink_gate({"BENCH_CI": "1"}, None, vm=False))              # BENCH_CI on a host
+    def test_voiceink_starts_only_inside_a_live_host_run_as_vocetbench_or_bench_ci_in_a_vm(self):
+        run = {"BENCH_HOST_RUN": "4242 abc123"}
+        self.assertTrue(self.voiceink_gate(run, "4242 abc123", vm=False))
+        self.assertFalse(self.voiceink_gate(run, "4242 abc123", vm=False, user="owner"))       # another account
+        self.assertFalse(self.voiceink_gate(run, "4242 abc123", vm=False, ps_cmd=""))          # host-run not alive
+        self.assertFalse(self.voiceink_gate(run, "4242 abc123", vm=False, ps_cmd="vim notes")) # not host-run
+        self.assertFalse(self.voiceink_gate(run, "4242 abc123", vm=False, ps_uid="501"))       # another user's process
+        self.assertFalse(self.voiceink_gate(run, "4242 abc123", vm=False, symlink=True))       # a symlinked gate
+        self.assertFalse(self.voiceink_gate(run, "abc123", vm=False))                          # no PID in it
+        self.assertFalse(self.voiceink_gate({"BENCH_HOST_RUN": "1"}, "4242 abc123", vm=False)) # not its nonce
+        self.assertFalse(self.voiceink_gate({"BENCH_HOST_RUN": "1"}, None, vm=False))
+        self.assertFalse(self.voiceink_gate({}, None, vm=True))                                # a VM without BENCH_CI
+        self.assertFalse(self.voiceink_gate({"BENCH_CI": "1"}, None, vm=False))                 # BENCH_CI on a host
         self.assertTrue(self.voiceink_gate({"BENCH_CI": "1"}, None, vm=True))
         script = (HERE / "apps" / "voiceink.sh").read_text()
         self.assertEqual(script.count("start VoiceInk.app"), 1)
         self.assertNotIn("open ", script)
+
+    def test_a_notice_only_in_the_read_that_crosses_the_deadline_is_refused(self):
+        def rig_straddle():  # the one read that crosses the deadline shows the notice; later reads don't
+            clock, app, drv, tgt = rig(latency=4.0, paste_in_chunks=40)
+            stop = {}
+            release = drv.release
+            drv.release = lambda: stop.setdefault("t", release())
+
+            class Straddling(hn.StubTarget):
+                def read(self):
+                    base = super().read()
+                    if "t" in stop and 4.9 <= clock.now() - stop["t"] < 5:
+                        clock.sleep(stop["t"] + 5.05 - clock.now())
+                        return base + " your trial has ended"
+                    return base
+            return clock, app, drv, Straddling(app)
+        timing = hn.Timing(timeout=5, settle=2, quiet=5)
+        clock, app, drv, tgt = rig_straddle()
+        res = hn.run_clip(clip(), drv, tgt, clock, timing)
+        self.assertEqual(res.status, "partial")
+        self.assertNotIn("trial", res.transcript)  # the crossing read isn't scored
+        self.assertIn("your trial has ended", res.seen)
+        r = rig_straddle()
+        with self.assertRaises(hn.AppRefused):
+            hn.run_all([clip(1)], r[2], r[3], r[0], timing, self.out, run={"fingerprint": "f1", "clip_ids": ["c1"]},
+                       restart_after_ambiguous=False, refusal_text=["your trial has ended"], **QUIET)
 
     def test_refusal_matches_case_insensitively(self):
         self.assertEqual(hn.refusal("x YOUR TRIAL HAS ENDED y", ["Your trial has ended"]), "Your trial has ended")

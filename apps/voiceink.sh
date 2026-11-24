@@ -73,11 +73,21 @@ json=$(printf '[{"id":"%s","name":"Dictation","isAIEnhancementEnabled":%s,"selec
   "$mode" "$enhance" "$model" "$language" "$provider" "$ai_model")
 defaults write $d modeConfigurationsV2 -data "$(printf '%s' "$json" | xxd -p | tr -d '\n')"
 defaults write $d activeConfigurationId -string "$mode"
-# Started only inside ./bench host-run (its nonce: work/host-run.gate exists only while host-run runs, and
-# host-run passes the same value as BENCH_HOST_RUN) or with BENCH_CI=1 in a virtual machine.
+# Started only inside ./bench host-run, or with BENCH_CI=1 in a virtual machine. host-run: this account is
+# vocetbench; work/host-run.gate (which host-run creates afresh and deletes) is a regular file owned by this
+# account, equals BENCH_HOST_RUN, and names the PID of a live `bench.py host-run` process of this account.
 gate="$BENCH_ROOT/work/host-run.gate"
-if { [ -n "${BENCH_HOST_RUN:-}" ] && [ -f "$gate" ] && [ "$(cat "$gate")" = "$BENCH_HOST_RUN" ]; } ||
-  { [ "${BENCH_CI:-}" = 1 ] && [ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" = 1 ]; }; then
+in_host_run() {
+  local pid nonce
+  [ "$(id -un)" = vocetbench ] && [ -n "${BENCH_HOST_RUN:-}" ] || return 1
+  [ -f "$gate" ] && [ ! -L "$gate" ] && [ -O "$gate" ] || return 1
+  [ "$(cat "$gate")" = "$BENCH_HOST_RUN" ] || return 1
+  read -r pid nonce <"$gate"
+  [[ $pid =~ ^[0-9]+$ ]] && [ -n "$nonce" ] || return 1
+  [ "$(ps -p "$pid" -o uid= | tr -d ' ')" = "$(id -u)" ] || return 1
+  ps -p "$pid" -o command= | grep -q "bench.py host-run"
+}
+if in_host_run || { [ "${BENCH_CI:-}" = 1 ] && [ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" = 1 ]; }; then
   start VoiceInk.app VoiceInk
 else
   log "VoiceInk is set up but not started: on a host only ./bench host-run launches it (its trial starts then)"
