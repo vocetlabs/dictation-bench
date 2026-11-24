@@ -1,0 +1,25 @@
+{
+  "name": "openwhispr.best-asr",
+  "version": "1.12.0",
+  "process": "OpenWhispr",
+  "app_path": "/Applications/OpenWhispr.app",
+  "hotkey": "ralt",
+  "mode": "hold",
+  "release": {
+    "url": "https://github.com/OpenWhispr/openwhispr/releases/download/v1.12.0/OpenWhispr-1.12.0-arm64.dmg",
+    "sha256": "4a3ec44a08d6195066ce271d319cd8e43df2d37b6e3afb64b51c8f933abb3350",
+    "tag": "v1.12.0",
+    "commit": "ad74240688"
+  },
+  "language": "en",
+  "hosted_setup": false,
+  "settings_files": [],
+  "logs": "~/Library/Application Support/*[Ww]hisper*/logs/debug-*.log",
+  "model": {
+    "id": "Parakeet Unified EN 0.6B, sherpa-onnx int8 (setup table's English pick)",
+    "size_mb": 631,
+    "backend": "sherpa-onnx"
+  },
+  "cleanup": "off",
+  "notes": "Guest, on this device, English. Activation hold (onboarding sets push-to-talk for new users; was tap in BENCH1). Key Right Option: its Globe/Fn default can't be pressed by software. best-asr: the maintainer's English pick (its setup table), cleanup off; nothing else changed. VM check 2026-11-23: smoke 12/12, 10 clips 10 ok."
+}

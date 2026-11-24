@@ -1,0 +1,28 @@
+{
+  "name": "voiceink.best-asr",
+  "version": "2.27",
+  "process": "VoiceInk",
+  "app_path": "/Applications/VoiceInk.app",
+  "hotkey": "ralt",
+  "mode": "hold",
+  "hybrid": true,
+  "release": {
+    "url": "https://github.com/Beingpax/VoiceInk/releases/download/v2.27/VoiceInk.dmg",
+    "sha256": "a832f6c3a1655f2e51df112efa45e24fa158601d5abe8689fe48fc6904c771c6",
+    "tag": "v2.27",
+    "commit": "b5d1be9a7c"
+  },
+  "hosted_setup": false,
+  "settings_files": [
+    "~/Library/Preferences/com.prakashjoshipax.VoiceInk.plist"
+  ],
+  "logs": "unified:VoiceInk:com.prakashjoshipax",
+  "model": {
+    "id": "Parakeet V3 (parakeet-tdt-0.6b-v3), Core ML, FluidInference/parakeet-tdt-0.6b-v3-coreml@7dd20fe6",
+    "size_mb": 469,
+    "backend": "FluidAudio Core ML, live transcription on"
+  },
+  "language": "en",
+  "cleanup": "off",
+  "notes": "Maintainer's release in its 7-day trial (starts at first launch; after it every paste gets an upgrade notice, so finish runs within 7 days of setup). Onboarding's local path: Parakeet V3, starter Dictation mode (text formatting on, live transcription on); shortcut Right Option (onboarding asks, no default), recording mode hybrid (default). best-asr: VoiceInk marks no local model as recommended; onboarding requires Parakeet V3, so it is the maintainer-recommended local model. Language English (Parakeet V3 takes a language hint); nothing else changed. VM check 2026-11-23: smoke 12/12, 10 clips 10 ok."
+}

@@ -78,8 +78,8 @@ runs the smoke dictation as a gate, then the clips, and scores in the job. Runs 
 Mac. The job uploads `score.json`, `run.json` and (with a judge key) `judge.json` only.
 
 Apps with an unattended setup (`hosted_setup: true` in `apps/<app>.json`): Handy, Muesli, FluidVoice and
-Vocet (built from the pinned commit). OpenWhispr and VoiceInk are set up by hand on a local Mac for now
-(their configs say why).
+Vocet (built from the pinned commit). OpenWhispr and VoiceInk run on a local Mac or a Lume VM (below) for
+now (their configs say why).
 
 ## Run it on a Mac (accuracy and speed)
 
@@ -99,6 +99,26 @@ installed (system output left on the speakers), and Accessibility for the termin
 For speed numbers, use a quiet Mac: no other VMs or builds; note the load average and free memory before and
 after. Quit every other dictation app (several share the same key).
 
+### In a Lume VM
+
+App setups grant permissions by writing the TCC rows System Settings would write (`BENCH_CI=1`), which
+needs System Integrity Protection off and `sudo`. A VM for that, cloned once from a logged-in macOS 15
+image that has BlackHole 2ch, uv and Accessibility for Terminal (here `dictation-vm-golden`):
+
+```sh
+lume clone dictation-vm-golden dictation-vm-benchapps && lume set dictation-vm-benchapps --memory 8GB --cpu 4
+lume run dictation-vm-benchapps --no-display --detach --recovery-mode true   # then over its VNC:
+#   Options > Continue > (language) > Utilities > Terminal: csrutil disable, y, the admin password;
+#   shutdown -h now. (`lume sip off <vm>` automates this when its menu clicks land.)
+lume run dictation-vm-benchapps --no-display --detach
+```
+
+Then copy the bench and `clips/` into the VM and run each step from the VM's Terminal (Accessibility lives
+there): `./bench machine`, then `printf '<password>\n' | sudo -S -v && BENCH_CI=1 bash apps/<app>.<profile>.sh`,
+then `./bench run --app <app>.<profile> --smoke`. Allow Terminal's one-time microphone prompt (VNC). An 8 GB VM
+can't run VoiceInk Refine (it needs 16 GB), and its paravirtual GPU makes on-device LLM cleanup far slower
+than a Mac (OpenWhispr's Qwen3.5 2B takes over 60 s), so cleanup profiles are checked on the host.
+
 `python3 bench.py dry-run` runs the loop against a simulated app; `./test.sh` runs the tests (standard library
 only, no macOS).
 
@@ -115,9 +135,13 @@ hash of its settings files in `run.json`.
 | [Handy](https://github.com/cjpais/Handy)               | 0.10.1                       | Option+Space, hold-or-toggle (held here)                                 | Parakeet Unified EN 0.6B, Q8_0 GGUF (731 MB)        |
 | [Muesli](https://github.com/Muesli-HQ/muesli)          | 0.8.6                        | Right Option, hold                                                       | Parakeet Unified EN 0.6B, Core ML (~565 MB)         |
 | [FluidVoice](https://github.com/altic-dev/FluidVoice)  | 1.6.13                       | Right Option, toggle                                                     | Parakeet TDT 0.6B, Core ML (~450 MB)                |
-| [VoiceInk](https://github.com/Beingpax/VoiceInk)       | 2.27                         | chosen in onboarding                                                     | Parakeet TDT 0.6B v3, Core ML (~450 MB)             |
-| [OpenWhispr](https://github.com/OpenWhispr/openwhispr) | 1.12.0                       | Right Option (its Globe/Fn default can't be pressed by software), toggle | Parakeet Unified EN 0.6B, sherpa-onnx int8 (631 MB) |
+| [VoiceInk](https://github.com/Beingpax/VoiceInk)       | 2.27 (release, 7-day trial)  | Right Option (onboarding asks), hybrid (held here)                       | Parakeet V3, Core ML (469 MB); profiles: `voiceink.{shipped,best-asr,local-cleanup}` |
+| [OpenWhispr](https://github.com/OpenWhispr/openwhispr) | 1.12.0                       | Right Option (its Globe/Fn default can't be pressed by software), hold   | Parakeet Unified EN 0.6B, sherpa-onnx int8 (631 MB) + Qwen3.5 2B cleanup (shipped on 16 GB+); profiles: `openwhispr.{shipped,best-asr}` |
 | [Vocet](https://github.com/vocetlabs/dictation-app)    | built at the config's commit | Right Option, hold                                                       | OrukQwen 1.7B + Gemma 4 E2B cleanup                 |
+
+Not yet: [Hex](https://github.com/kitlangton/Hex) and [OpenSuperWhisper](https://github.com/Starmel/OpenSuperWhisper)
+(both MIT, signed releases; their setups are still to be written). Out of scope: Buzz and Vibe, which
+transcribe files rather than dictate.
 
 Corrections to an app's configuration are welcome from its maintainers.
 
