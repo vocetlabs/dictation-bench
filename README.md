@@ -113,7 +113,8 @@ spoken-text WER) and `local-cleanup` (the shipped speech model held fixed, the a
 `--app handy` is `handy.shipped`; `--app handy:best-asr` picks a profile. A profile can be "n/a" or the same
 configuration as another (then it isn't run twice). [CONFIGS.md](CONFIGS.md) lists them with reasons.
 
-**Host runs** (the headline numbers, on one Mac, overnight):
+**Host runs** (the headline numbers, on one Mac, overnight, logged in as the bench's own Standard account,
+`vocetbench`):
 
 ```sh
 ./bench host-run --jobs handy:shipped,muesli:shipped,fluidvoice:shipped,vocet:shipped --passes 1 --first-pass 1
@@ -122,14 +123,15 @@ configuration as another (then it isn't run twice). [CONFIGS.md](CONFIGS.md) lis
 ./bench judge-check out/host/<stamp>/pass1/*                          # a second judge (JUDGE_API_KEY)
 ```
 
-Nothing of the owner's is deleted or overwritten: apps go into the bench's own folder, and for each job
-every benchmarked app is quit and the selected app's settings, data and models are moved aside and put back
-exactly afterwards (checked); see [CONFIGS.md](CONFIGS.md). Close TextEdit first. `./bench restore-host`
-finishes the restoration if a run is cut off. `host-run` refuses to start while a virtual machine runs, logs the load average before and after each job,
+The owner's data stays in their own account: `host-run` refuses to start as any user but `BENCH_USER`
+(default `vocetbench`) or as an administrator. Apps go into the bench's own folder and are quit by PID, never
+from `/Applications`; each job clears the app's state in the bench account and sets it up afresh; see
+[CONFIGS.md](CONFIGS.md). Close TextEdit first. `./bench restore-host` puts the input device back if a run is
+cut off. `host-run` refuses to start while a virtual machine runs, logs the load average before and after each job,
 sets each app up for its profile, rotates the app order each pass, gives every app in a pass the same seeded
 clip order, writes each pass to its own folder, runs one warm-up dictation (the smoke sentence) before each
 app's clips, records the chip, memory, macOS build and power source (`host.json`, `run.json`), and puts the
-input device and text-correction settings back when it ends. `report` prints each configuration's passes,
+input device back (by UID) when it ends. `report` prints each configuration's passes,
 their mean, 95% intervals from a bootstrap that resamples speakers (all of a speaker's clips together), and
 paired differences between neighbours in each group's ranking; a difference whose interval includes zero is
 reported as unresolved. `judge-check` asks a second judge from another model family (pinned in `judge.py`)
@@ -178,7 +180,7 @@ Disclosure: this bench is built and run by the developer of Vocet, one of the be
 | `macos.py`             | key events, BlackHole, playback, the TextEdit target, app restarts                     |
 | `score.py`             | WER, the completeness checks, `score.json`, the verifier and tables                    |
 | `judge.py`             | the optional judge metrics (ZER, AMEND) and the second judge                           |
-| `isolation.py`         | host runs: the owner's app state set aside and restored exactly, strict prefs, signals |
+| `isolation.py`         | host runs: the bench account check, clearing app state, the lock, strict prefs, signals |
 | `report.py`            | passes, means, speaker-bootstrap intervals, the judge check's agreement                |
 | `CONFIGS.md`           | every profile's settings and reasons, the frozen protocol, the pass plan, changes      |
 | `fetch_clips.py`       | downloads the dataset (pinned revision, sha256 checked) into `clips/`                  |

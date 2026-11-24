@@ -1,25 +1,28 @@
-"""Host-run safety (BENCH2): the owner's own apps, settings and models are never deleted or overwritten.
+"""Host-run safety (BENCH2). Host runs happen only in the bench's own Standard macOS account (BENCH_USER,
+default `vocetbench`; no admin rights, no Apple ID), so the owner's Keychain, settings and app data sit in
+another account and the bench never touches them. /Applications is shared with the owner: the bench installs
+only into its own work/Applications and quits only processes launched from there (macos.quit_tree).
 
-For each job, the app's state (its data folders and preference domains, listed in apps/<app>.<profile>.json
-as `state`) is moved aside before setup and put back exactly afterwards: folders by rename (so models and
-history come back byte for byte, without copying), preference domains by `defaults export` / `import`,
-checked by reading them back. A stash records what was moved, so `bench restore-host` can finish the job
-after a crash. Termination signals run the same restoration. The Keychain is never touched.
+Inside the bench account each job starts clean: the app's declared state (its data folders and preference
+domains, `state` in apps/<app>.<profile>.json, all inside this account's home) is deleted before setup writes
+the profile's. The default input device, which CoreAudio may share between accounts, is saved by its UID and
+put back (macos.save_input / restore_input); a lock keeps a host run and `restore-host` apart, and termination
+signals are held off while the input is saved or restored, so neither is cut in half.
 
 Preference reads are strict: a key or domain is "absent" only when `defaults` says it doesn't exist; any
 other failure stops the run."""
 from __future__ import annotations
 
-import json
+import contextlib
+import fcntl
 import os
 import pathlib
-import plistlib
 import shutil
 import signal
 import subprocess
-import time
 
-ABSENT = "absent"
+DEFAULT_BENCH_USER = "vocetbench"
+TERMINATING = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 
 class RestoreError(RuntimeError):
@@ -40,18 +43,6 @@ def read_pref(key: str, domain: str = "-g", run=_run) -> str | None:
     raise RestoreError(f"couldn't read {domain} {key}: {(r.stderr or '').strip()[:200]}")
 
 
-def write_bool_pref(key: str, value: str | None, domain: str = "-g", run=_run) -> None:
-    """Puts a boolean preference back: deleted when it was absent, else written as it was."""
-    if value is None:
-        r = run(["defaults", "delete", domain, key])
-        if r.returncode and "does not exist" not in (r.stderr or ""):
-            raise RestoreError(f"couldn't delete {domain} {key}")
-        return
-    r = run(["defaults", "write", domain, key, "-bool", "true" if value in ("1", "true", "YES") else "false"])
-    if r.returncode:
-        raise RestoreError(f"couldn't write {domain} {key}")
-
-
 def export_domain(domain: str, run=_run) -> bytes | None:
     """A preference domain as a plist, or None when it doesn't exist."""
     r = run(["defaults", "read", domain])
@@ -65,84 +56,67 @@ def export_domain(domain: str, run=_run) -> bytes | None:
     return out.stdout
 
 
-def same_plist(a: bytes | None, b: bytes | None) -> bool:
-    if a is None or b is None:
-        return a is b
-    return plistlib.loads(a) == plistlib.loads(b)
+def check_bench_account(name: str | None = None, groups: set[str] | None = None) -> None:
+    """Host runs start only as the bench's own account (BENCH_USER, default vocetbench), and only if it isn't
+    an administrator: the owner's data stays in their own account, out of the bench's reach."""
+    import grp
+    import pwd
+    want = os.environ.get("BENCH_USER") or DEFAULT_BENCH_USER
+    pw = pwd.getpwuid(os.getuid())
+    name = name if name is not None else pw.pw_name
+    if name != want:
+        raise SystemExit(f"host runs happen only in the bench's own macOS account '{want}' (BENCH_USER); this is "
+                         f"'{name}'. Log in as {want}: a Standard user with no Apple ID (CONFIGS.md)")
+    if groups is None:
+        groups = set()
+        for gid in os.getgrouplist(name, pw.pw_gid):
+            with contextlib.suppress(KeyError):
+                groups.add(grp.getgrgid(gid).gr_name)
+    if "admin" in groups:
+        raise SystemExit(f"'{name}' is an administrator: host runs need a Standard account (System Settings > "
+                         "Users & Groups), so the bench can't change what other accounts own")
 
 
-class AppState:
-    """One app's state on this Mac, moved aside for a bench job and put back exactly."""
+def clear_state(paths: list[str], domains: list[str], home: str | None = None, run=_run) -> None:
+    """Deletes an app's data folders and preference domains in this (the bench's) account, so setup starts
+    from nothing. Refuses any path outside this account's home."""
+    root = pathlib.Path(home or os.path.expanduser("~")).resolve()
+    targets = []
+    for p in paths:
+        path = pathlib.Path(os.path.expanduser(p))
+        where = path.parent.resolve() / path.name  # a symlink itself is removed, never followed
+        if root not in where.parents:
+            raise SystemExit(f"{p} isn't inside this account's home ({root}): not deleted")
+        targets.append(path)
+    for path in targets:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        elif path.exists() or path.is_symlink():
+            path.unlink()
+    for d in domains:
+        r = run(["defaults", "delete", d])
+        if r.returncode and "does not exist" not in (r.stderr or ""):
+            raise SystemExit(f"couldn't clear the {d} preferences: {(r.stderr or '').strip()[:200]}")
 
-    def __init__(self, name: str, paths: list[str], domains: list[str], stash: pathlib.Path,
-                 export=export_domain, run=_run) -> None:
-        self.name, self.stash, self.export, self.run = name, stash, export, run
-        self.paths = [pathlib.Path(os.path.expanduser(p)) for p in paths]
-        self.domains = list(domains)
-        self.manifest = stash / "manifest.json"
 
-    def save(self) -> None:
-        """Moves each folder or file aside (rename, same volume) and exports and clears each domain."""
-        if self.manifest.exists():
-            raise RestoreError(f"{self.stash} holds an unfinished job: run `bench restore-host` first")
-        self.stash.mkdir(parents=True, exist_ok=True)
-        rec = {"app": self.name, "paths": [], "domains": []}
-        for i, p in enumerate(self.paths):
-            aside = p.with_name(f"{p.name}.bench-owner")
-            if aside.exists():
-                raise RestoreError(f"{aside} exists: an earlier job didn't finish (bench restore-host)")
-            rec["paths"].append({"path": str(p), "aside": str(aside), "existed": p.exists()})
-        for d in self.domains:
-            data = self.export(d)
-            rec["domains"].append({"domain": d, "existed": data is not None})
-            if data is not None:
-                (self.stash / f"{d}.plist").write_bytes(data)
-        self.manifest.write_text(json.dumps(rec, indent=1))  # before anything moves: a crash can be undone
-        for p in rec["paths"]:
-            if p["existed"]:
-                os.rename(p["path"], p["aside"])
-        for d in rec["domains"]:
-            if d["existed"]:
-                self.run(["defaults", "delete", d["domain"]])
-
-    def restore(self) -> None:
-        """Removes what the bench left and puts the owner's state back; checks it. Idempotent."""
-        if not self.manifest.exists():
-            return
-        rec = json.loads(self.manifest.read_text())
-        for p in rec["paths"]:
-            path, aside = pathlib.Path(p["path"]), pathlib.Path(p["aside"])
-            if p["existed"] and not aside.exists() and path.exists():
-                continue  # already back
-            if path.exists() or path.is_symlink():
-                if path.is_dir() and not path.is_symlink():
-                    shutil.rmtree(path)
-                else:
-                    path.unlink()
-            if p["existed"]:
-                os.rename(aside, path)
-        for d in rec["domains"]:
-            self.run(["defaults", "delete", d["domain"]])
-            if d["existed"]:
-                r = self.run(["defaults", "import", d["domain"], str(self.stash / f"{d['domain']}.plist")])
-                if r.returncode:
-                    raise RestoreError(f"couldn't import the {d['domain']} preferences back")
-        self.verify(rec)
-        self.manifest.unlink()
-
-    def verify(self, rec: dict) -> None:
-        for p in rec["paths"]:
-            back = pathlib.Path(p["path"]).exists()
-            if back != p["existed"] or pathlib.Path(p["aside"]).exists():
-                raise RestoreError(f"{p['path']} is not as it was")
-        for d in rec["domains"]:
-            want = (self.stash / f"{d['domain']}.plist").read_bytes() if d["existed"] else None
-            if not same_plist(self.export(d["domain"]), want):
-                raise RestoreError(f"the {d['domain']} preferences are not as they were")
+@contextlib.contextmanager
+def host_lock(path: pathlib.Path):
+    """One host run or restore-host at a time (an exclusive lock on `path`, released when the process ends)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = path.open("w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        raise SystemExit(f"another host-run or restore-host is running ({path})") from None
+    try:
+        yield
+    finally:
+        fh.close()
 
 
 def on_termination() -> None:
-    """SIGTERM and SIGHUP end the run through the same `finally` as Ctrl-C, so the state is restored."""
+    """SIGTERM and SIGHUP end the run through the same `finally` as Ctrl-C, so the input is restored."""
     def handler(signum, _frame):
         signal.signal(signum, signal.SIG_IGN)
         raise SystemExit(f"stopped by signal {signum}")
@@ -150,9 +124,12 @@ def on_termination() -> None:
         signal.signal(s, handler)
 
 
-def wait_gone(process: str, timeout: float = 10.0) -> bool:
-    for _ in range(int(timeout / 0.2)):
-        if _run(["pgrep", "-x", process]).returncode:
-            return True
-        time.sleep(0.2)
-    return False
+@contextlib.contextmanager
+def signals_held():
+    """Ctrl-C, SIGTERM and SIGHUP wait until the block ends, then stop the run as usual: a save or restore
+    inside is never cut in half."""
+    old = signal.pthread_sigmask(signal.SIG_BLOCK, TERMINATING)
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old)

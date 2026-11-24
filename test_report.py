@@ -117,6 +117,7 @@ class SummaryTests(unittest.TestCase):
                  "machine label": lambda rs: rs[0]["run"].update(machine="ci"),
                  "clip selection": lambda rs: rs[0]["run"].update(clip_ids=["c1"]),
                  "passes differ": lambda rs: rs[1]["run"]["effective"].update(binary_sha256="other"),
+                 "settings files": lambda rs: rs[1]["run"]["effective"].update(settings_sha256={"s.json": "x"}),
                  "not reportable": lambda rs: rs[0]["run"].update(unverified="check it")}
         for want, change in cases.items():
             rs = fresh()

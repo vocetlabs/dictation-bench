@@ -85,8 +85,15 @@ class CoreAudio:
         return val.value
 
     def name(self, dev: int) -> str:
+        return self.string(dev, "lnam")
+
+    def uid(self, dev: int) -> str:
+        """The device's persistent unique ID (kAudioDevicePropertyDeviceUID): two devices can share a name."""
+        return self.string(dev, "uid ")
+
+    def string(self, dev: int, sel: str) -> str:
         ref, size = ctypes.c_void_p(), ctypes.c_uint32(ctypes.sizeof(ctypes.c_void_p))
-        a = self.addr("lnam")
+        a = self.addr(sel)
         if self.ca.AudioObjectGetPropertyData(dev, ctypes.byref(a), 0, None, ctypes.byref(size), ctypes.byref(ref)):
             return ""
         buf = ctypes.create_string_buffer(512)
@@ -94,18 +101,27 @@ class CoreAudio:
         self.cf.CFRelease(ref)
         return buf.value.decode()
 
-    def inputs(self) -> dict[str, int]:
+    def input_ids(self) -> list[int]:
         a, size = self.addr("dev#"), ctypes.c_uint32(0)
         self.ca.AudioObjectGetPropertyDataSize(1, ctypes.byref(a), 0, None, ctypes.byref(size))
         ids = (ctypes.c_uint32 * (size.value // 4))()
         self.ca.AudioObjectGetPropertyData(1, ctypes.byref(a), 0, None, ctypes.byref(size), ids)
-        out = {}
+        out = []
         for d in ids:
             s, sa = ctypes.c_uint32(0), self.addr("stm#", "inpt")
             self.ca.AudioObjectGetPropertyDataSize(d, ctypes.byref(sa), 0, None, ctypes.byref(s))
             if s.value:
-                out[self.name(d)] = d
+                out.append(d)
         return out
+
+    def inputs(self) -> dict[str, int]:
+        return {self.name(d): d for d in self.input_ids()}
+
+    def input_by_uid(self, uid: str) -> int:
+        hit = next((d for d in self.input_ids() if self.uid(d) == uid), None)
+        if hit is None:
+            raise SystemExit(f"no input device with UID '{uid}'")
+        return hit
 
     def find_input(self, device: str) -> int:
         """The input device with exactly this name."""
@@ -130,13 +146,13 @@ class CoreAudio:
     def default_input_name(self) -> str:
         return self.name(self.u32(1, "dIn "))
 
+    def default_input_uid(self) -> str:
+        return self.uid(self.u32(1, "dIn "))
+
     def set_default_input(self, dev: int) -> None:
         val, a = ctypes.c_uint32(dev), self.addr("dIn ")
         if self.ca.AudioObjectSetPropertyData(1, ctypes.byref(a), 0, None, 4, ctypes.byref(val)):
             raise SystemExit("couldn't set the default input")
-
-    def running_somewhere(self, dev: int) -> bool:
-        return bool(self.u32(dev, "gone"))
 
 
 class BlackHoleDriver(Driver):
@@ -224,38 +240,20 @@ class BlackHoleDriver(Driver):
         return sum(rss for pid, _, rss, _ in _procs() if pid in pids) / 1024 if pids else None
 
 
+def _ps(fields: str) -> list[list[str]]:
+    """This account's processes (`ps -U <uid>`): the bench never looks at, or stops, another account's."""
+    out = subprocess.run(["ps", "-U", str(os.getuid()), "-o", fields], capture_output=True, text=True).stdout
+    n = fields.count(",") + 1
+    return [p for p in (line.split(None, n - 1) for line in out.splitlines())
+            if len(p) == n and all(x.isdigit() for x in p[:-1])]
+
+
 def _procs() -> list[tuple[int, int, int, str]]:
-    out = subprocess.run(["ps", "-axo", "pid=,ppid=,rss=,comm="], capture_output=True, text=True).stdout
-    procs = []
-    for line in out.splitlines():
-        parts = line.split(None, 3)
-        if len(parts) == 4 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit():
-            procs.append((int(parts[0]), int(parts[1]), int(parts[2]), os.path.basename(parts[3])))
-    return procs
-
-
-def process_tree(procs, name: str) -> set[int]:
-    """PIDs of the processes named `name` and all their descendants (helpers, model servers)."""
-    tree = {p for p, _, _, comm in procs if comm == name}
-    grew = bool(tree)
-    while grew:
-        more = {p for p, pp, _, _ in procs if pp in tree} - tree
-        grew, tree = bool(more), tree | more
-    return tree
-
-
-def process_tree_pids(name: str) -> set[int]:
-    return process_tree(_procs(), name)
+    return [(int(a), int(b), int(c), os.path.basename(d)) for a, b, c, d in _ps("pid=,ppid=,rss=,comm=")]
 
 
 def _paths() -> list[tuple[int, int, str]]:
-    out = subprocess.run(["ps", "-axo", "pid=,ppid=,comm="], capture_output=True, text=True).stdout
-    rows = []
-    for line in out.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
-            rows.append((int(parts[0]), int(parts[1]), parts[2]))
-    return rows
+    return [(int(a), int(b), c) for a, b, c in _ps("pid=,ppid=,comm=")]
 
 
 def tree_under(rows: list[tuple[int, int, str]], prefix: str) -> set[int]:
@@ -267,6 +265,33 @@ def tree_under(rows: list[tuple[int, int, str]], prefix: str) -> set[int]:
         more = {pid for pid, ppid, _ in rows if ppid in tree} - tree
         grew, tree = bool(more), tree | more
     return tree
+
+
+def foreign_copies(rows: list[tuple[int, int, str]], names: set[str], prefix: str) -> list[str]:
+    """Executables named like a benchmarked app but launched from elsewhere (an /Applications copy): the
+    bench never quits those, so a host run refuses to start while one runs."""
+    return sorted({exe for _, _, exe in rows if os.path.basename(exe) in names and not exe.startswith(prefix)})
+
+
+def quit_tree(prefix: str, rows=None, kill=os.kill, wait: float = 10.0) -> None:
+    """Quits the processes launched from `prefix` (a bench bundle or the bench's app folder) by PID: TERM,
+    then KILL; never by process name, so a same-named copy elsewhere is left alone."""
+    import signal
+    rows = rows or _paths
+    for sig, timeout in ((signal.SIGTERM, wait), (signal.SIGKILL, 5.0)):
+        pids = tree_under(rows(), prefix)
+        if not pids:
+            return
+        for pid in pids:
+            try:
+                kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        for _ in range(max(1, int(timeout / 0.2))):
+            if not tree_under(rows(), prefix) & pids:
+                return
+            time.sleep(0.2)
+    raise SystemExit(f"processes from {prefix} won't quit")
 
 
 def bundle_pids(app: App) -> set[int]:
@@ -289,15 +314,9 @@ def mic_decision(capturing: set[int] | None, app_tree: set[int]) -> bool:
     return bool(capturing & app_tree)
 
 
-def process_tree_rss_mb(name: str) -> float | None:
-    procs = _procs()
-    tree = process_tree(procs, name)
-    return sum(rss for p, _, rss, _ in procs if p in tree) / 1024 if tree else None
-
-
 def apps_dir() -> pathlib.Path:
-    """Where the bench installs apps: its own folder, never /Applications (the owner's copies stay put)."""
-    return pathlib.Path(os.environ.get("BENCH_APPS") or pathlib.Path(__file__).resolve().parent / "work" / "Applications")
+    """Where the bench installs apps: always its own folder, never /Applications (shared with the owner)."""
+    return pathlib.Path(__file__).resolve().parent / "work" / "Applications"
 
 
 def bundle(app: App) -> pathlib.Path:
@@ -305,14 +324,9 @@ def bundle(app: App) -> pathlib.Path:
 
 
 def restart_app(app: App, settle: float = 10.0) -> None:
-    """Quit (TERM, then KILL) and reopen the app in the background, then let it load its model."""
-    subprocess.run(["pkill", "-TERM", "-x", app.process], check=False)
-    for _ in range(50):
-        if subprocess.run(["pgrep", "-x", app.process], capture_output=True).returncode:
-            break
-        time.sleep(0.2)
-    else:
-        subprocess.run(["pkill", "-KILL", "-x", app.process], check=False)
+    """Quit the bench's copy (by PID: TERM, then KILL) and reopen it in the background, then let it load its
+    model."""
+    quit_tree(str(bundle(app)) + "/Contents/")
     subprocess.run(["open", "-g", str(bundle(app))], check=False)
     time.sleep(settle)
 
@@ -330,11 +344,10 @@ class TextEditTarget(Target):
         if not scratch.exists():  # never rewritten while open: TextEdit would report a conflicting change
             scratch.write_text("")
         self.app = self.window = self.area = None
-        # Never quit TextEdit: it may hold the owner's documents. It must be closed, or show only this one.
+        # Never quit TextEdit: it may hold other documents. It must be closed, or show only this one.
         if self.AK.NSRunningApplication.runningApplicationsWithBundleIdentifier_(TEXTEDIT):
             _, wins = self._get(self._app(), "AXWindows")
-            others = [str(self._get(w, "AXTitle")[1] or "") for w in wins or []]
-            others = [t for t in others if not t.startswith(scratch.name)]
+            others = [w for w in wins or [] if not self._is_scratch(w)]
             if others:
                 raise SystemExit(f"TextEdit has other documents open ({len(others)}): save and quit it first; "
                                  "the bench uses its own scratch document")
@@ -343,6 +356,10 @@ class TextEditTarget(Target):
     def _get(self, el, attr):
         err, val = self.AS.AXUIElementCopyAttributeValue(el, attr, None)
         return (err, val)
+
+    def _is_scratch(self, window) -> bool:
+        """The window's document (AXDocument, a file URL) is exactly the scratch file, not just a namesake."""
+        return is_document(self._get(window, "AXDocument")[1], self.scratch)
 
     def _app(self):
         apps = self.AK.NSRunningApplication.runningApplicationsWithBundleIdentifier_(TEXTEDIT)
@@ -353,8 +370,7 @@ class TextEditTarget(Target):
     def _find(self) -> None:
         self.app = self._app()
         _, wins = self._get(self.app, "AXWindows")
-        self.window = next((w for w in wins or [] if str(self._get(w, "AXTitle")[1] or "").startswith(self.scratch.name)),
-                           None)
+        self.window = next((w for w in wins or [] if self._is_scratch(w)), None)
         if self.window is None:
             raise InfraError("err_target", f"no TextEdit window for {self.scratch.name}")
 
@@ -417,6 +433,15 @@ class TextEditTarget(Target):
         return "" if v is None else str(v)
 
 
+def is_document(url, path: pathlib.Path) -> bool:
+    """Whether an AXDocument value (a file:// URL, or None for an unsaved document) names exactly `path`."""
+    from urllib.parse import unquote, urlparse
+    if not url:
+        return False
+    u = urlparse(str(url))
+    return u.scheme == "file" and pathlib.Path(unquote(u.path)).resolve() == path.resolve()
+
+
 def MacKeysChord(spec: str) -> MacKeys:  # noqa: N802 - reads like a constructor
     return MacKeys(parse_hotkey(spec))
 
@@ -466,12 +491,6 @@ __all__ = ["BlackHoleDriver", "CoreAudio", "MacKeys", "TextEditTarget", "preflig
            "MODIFIERS", "KEYS"]
 
 
-TEXT_CORRECTIONS = ("NSAutomaticCapitalizationEnabled", "NSAutomaticPeriodSubstitutionEnabled",
-                    "NSAutomaticSpellingCorrectionEnabled", "NSAutomaticQuoteSubstitutionEnabled",
-                    "NSAutomaticDashSubstitutionEnabled", "NSAutomaticTextReplacementEnabled",
-                    "NSAutomaticInlinePredictionEnabled", "NSAutomaticTextCompletionEnabled")
-
-
 def _out(*cmd: str) -> str:
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=20).stdout.strip()
@@ -495,30 +514,23 @@ def vm_running() -> bool:
     return bool(_out("pgrep", "-f", "com.apple.Virtualization.VirtualMachine"))
 
 
-def save_machine_state() -> dict:
-    """What `bench machine` changes: the default input (exact name) and the Mac-wide text corrections,
-    read strictly (a failed read stops the run instead of counting as absent)."""
-    from isolation import read_pref
-    return {"input": CoreAudio().default_input_name(), "defaults": {k: read_pref(k) for k in TEXT_CORRECTIONS}}
+def save_input() -> dict:
+    """The default input device, by UID (unique, unlike names) and name (for messages): `bench machine`
+    changes it, and CoreAudio may share it with other accounts. The text corrections it turns off are this
+    (the bench's) account's own preferences and stay off."""
+    ca = CoreAudio()
+    return {"input_uid": ca.default_input_uid(), "input": ca.default_input_name()}
 
 
-def restore_machine_state(state: dict) -> list[str]:
-    """Puts the input and the text corrections back, then reads both back; returns what still differs."""
-    from isolation import RestoreError, read_pref, write_bool_pref
+def restore_input(state: dict) -> list[str]:
+    """Puts the default input back by UID and reads it back; returns what still differs."""
     problems = []
-    for k, v in state["defaults"].items():
-        try:
-            write_bool_pref(k, v)
-            if (read_pref(k) is None) != (v is None) or (v is not None and read_pref(k) != v):
-                problems.append(f"{k} reads back as {read_pref(k)!r}, was {v!r}")
-        except RestoreError as e:
-            problems.append(str(e))
     try:
         ca = CoreAudio()
-        ca.set_default_input(ca.find_input(state["input"]))
-        if ca.default_input_name() != state["input"]:
+        ca.set_default_input(ca.input_by_uid(state["input_uid"]))
+        if ca.default_input_uid() != state["input_uid"]:
             problems.append(f"the default input is {ca.default_input_name()!r}, was {state['input']!r}")
-    except (SystemExit, OSError) as e:
+    except (SystemExit, OSError, KeyError) as e:
         problems.append(f"the default input: {e}")
     for p in problems:
         print(f"host-run: NOT RESTORED: {p}", file=sys.stderr)
