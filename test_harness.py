@@ -220,6 +220,29 @@ class RunTests(unittest.TestCase):
         rows = self.run_all(clips[:1], rig(), fp="f2")
         self.assertEqual(rows["c1"]["status"], "ok")
 
+    def test_a_notice_seen_only_in_the_quiet_period_after_a_partial_paste_is_refused(self):
+        ref = REF + " your trial has ended upgrade now"
+        timing = hn.Timing(timeout=5, settle=2)
+        clock, app, drv, tgt = rig(latency=4.0, paste_in_chunks=40)  # still pasting at the deadline
+        res = hn.run_clip(clip(ref=ref), drv, tgt, clock, timing)
+        self.assertEqual(res.status, "partial")
+        self.assertNotIn("trial", res.transcript)  # what is scored stops at the deadline
+        self.assertIn("your trial has ended", res.seen)
+        r = rig(latency=4.0, paste_in_chunks=40)
+        with self.assertRaises(hn.AppRefused):
+            hn.run_all([clip(1, ref=ref)], r[2], r[3], r[0], timing, self.out,
+                       run={"fingerprint": "f1", "clip_ids": ["c1"]}, restart_after_ambiguous=False,
+                       refusal_text=["your trial has ended"], **QUIET)
+        self.assertEqual(hn.load_rows(self.out / "results.csv")["c1"]["status"], "refused")
+
+    def test_a_standalone_voiceink_setup_never_starts_it_on_a_host(self):
+        script = (HERE / "apps" / "voiceink.sh").read_text()
+        gate = 'if [ -n "${BENCH_HOST_RUN:-}" ] || [ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" = 1 ]; then\n' \
+               '  start VoiceInk.app VoiceInk\n'
+        self.assertIn(gate, script)
+        self.assertEqual(script.count("start VoiceInk.app"), 1)
+        self.assertNotIn("open ", script)
+
     def test_refusal_matches_case_insensitively(self):
         self.assertEqual(hn.refusal("x YOUR TRIAL HAS ENDED y", ["Your trial has ended"]), "Your trial has ended")
         self.assertEqual(hn.refusal("all fine", ["Your trial has ended"]), "")

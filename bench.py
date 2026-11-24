@@ -333,9 +333,9 @@ def run_job(app: hn.App, *, smoke_only: bool = False, accuracy_only: bool = Fals
                 try:
                     res = hn.run_clip(clip, driver, target, hn.Clock(), timing)
                 except hn.InfraError as e:
-                    res = hn.Result(e.status, error=str(e))
+                    res = hn.Result(e.status, error=str(e), seen=e.seen)
                 driver.recover(restart=res.status != "ok")  # a failed smoke try leaves an unknown state
-                if hit := hn.refusal(res.transcript, app.refusal_text):
+                if hit := hn.refusal(res.seen + " " + res.transcript, app.refusal_text):
                     print(f"the smoke dictation pasted {app.base}'s refusal notice ({hit!r}): stop", file=sys.stderr)
                     return 3
                 ok, msg = smoke_ok(res)

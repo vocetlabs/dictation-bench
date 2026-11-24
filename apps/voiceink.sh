@@ -17,8 +17,10 @@
 #
 # The trial: LicenseManager stores its start date in the login Keychain at the first launch, and after 7
 # days every paste starts with "Your trial has ended..." (TranscriptionDelivery). The bench never writes the
-# Keychain; the harness stops a run whose paste holds that notice (refusal_text). Check it in a VM; on a
-# host, launch VoiceInk only in the account and on the night of its runs.
+# Keychain; a paste holding that notice at any point (refusal_text) marks the clip `refused` and stops the
+# run. Smoke tests and checks happen in a VM. On a host (not a virtual machine) only `./bench host-run`, in
+# the bench's own account on VoiceInk's first night, launches it: a standalone setup installs and configures
+# it but never starts it there.
 . "$(dirname "$0")/common.sh"
 d=com.prakashjoshipax.VoiceInk
 install_dmg https://github.com/Beingpax/VoiceInk/releases/download/v2.27/VoiceInk.dmg \
@@ -71,4 +73,8 @@ json=$(printf '[{"id":"%s","name":"Dictation","isAIEnhancementEnabled":%s,"selec
   "$mode" "$enhance" "$model" "$language" "$provider" "$ai_model")
 defaults write $d modeConfigurationsV2 -data "$(printf '%s' "$json" | xxd -p | tr -d '\n')"
 defaults write $d activeConfigurationId -string "$mode"
-start VoiceInk.app VoiceInk
+if [ -n "${BENCH_HOST_RUN:-}" ] || [ "$(sysctl -n kern.hv_vmm_present 2>/dev/null)" = 1 ]; then
+  start VoiceInk.app VoiceInk
+else
+  log "VoiceInk is set up but not started: on a host only ./bench host-run launches it (its trial starts then)"
+fi

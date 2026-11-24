@@ -21,7 +21,8 @@
 # run: settings_source).
 . "$(dirname "$0")/common.sh"
 app="$APPS/OpenWhispr.app"
-quit_bench_copy() { pkill -TERM -f "$app/Contents/MacOS/" 2>/dev/null && sleep 5 || true; }
+# Only this account's processes launched from the bench's copy (by its bundle path), never another copy.
+quit_bench_copy() { pkill -TERM -U "$(id -u)" -f "^$app/Contents/MacOS/" 2>/dev/null && sleep 5 || true; }
 quit_bench_copy
 install_dmg https://github.com/OpenWhispr/openwhispr/releases/download/v1.12.0/OpenWhispr-1.12.0-arm64.dmg \
   4a3ec44a08d6195066ce271d319cd8e43df2d37b6e3afb64b51c8f933abb3350 OpenWhispr.app
@@ -75,5 +76,5 @@ sed -i '' '/^DICTATION_KEY=/d; /^ACTIVATION_MODE=/d' "$ud/.env"
 printf 'DICTATION_KEY=RightOption\nACTIVATION_MODE=push\n' >>"$ud/.env"
 # Debug-level logging, so a failed smoke test shows why (its audio is only the synthetic sentence).
 open -g --env OPENWHISPR_LOG_LEVEL=debug "$app"
-for _ in $(seq 1 60); do pgrep -f "$app/Contents/MacOS/" >/dev/null && break; sleep 1; done
+for _ in $(seq 1 60); do pgrep -U "$(id -u)" -f "^$app/Contents/MacOS/" >/dev/null && break; sleep 1; done
 sleep 15

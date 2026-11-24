@@ -154,9 +154,10 @@ lume run dictation-vm-benchapps --no-display --detach
 ```
 
 Then copy the bench and `clips/` into the VM and run each step from the VM's Terminal (Accessibility lives
-there): `./bench machine`; once per app, the TCC rows for its bundle id (`grant` in `apps/common.sh`, run with
-`BENCH_CI=1` after `sudo -v`); then `./bench setup --app <app>:<profile> --overwrite` and
-`./bench run --app <app>:<profile> --smoke`. Allow Terminal's one-time microphone prompt (VNC). An 8 GB VM
+there): `./bench machine`; then, after `sudo -v`, `BENCH_CI=1 ./bench setup --app <app>:<profile> --overwrite`
+(which also writes the app's TCC rows; `BENCH_CI=1` is honoured only in a virtual machine) and
+`./bench run --app <app>:<profile> --smoke`. Quit the previous app first: a run refuses to start while another
+benchmarked app runs. Allow Terminal's one-time microphone prompt (VNC). An 8 GB VM
 can't run VoiceInk Refine (it needs 16 GB), and its paravirtual GPU makes on-device LLM cleanup far slower
 than a Mac (OpenWhispr's Qwen3.5 2B takes over 60 s), so those profiles are marked verify-on-host.
 
