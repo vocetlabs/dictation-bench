@@ -267,6 +267,17 @@ class QuitTests(unittest.TestCase):
         self.assertEqual(macos.foreign_copies(BindingTests.ROWS, {"Vocet"}, "/bench/work/Applications/"),
                          ["/Applications/Vocet.app/Contents/MacOS/Vocet"])
 
+    def test_a_run_refuses_while_another_benchmarked_app_runs(self):
+        import macos
+        rows = BindingTests.ROWS + [(30, 1, "/bench/work/Applications/VoiceInk.app/Contents/MacOS/VoiceInk"),
+                                    (31, 1, "/usr/bin/zsh")]
+        own, bench_prefix = "/bench/work/Applications/Vocet.app/Contents/", "/bench/work/Applications/"
+        self.assertEqual(macos.other_apps(rows, own, {"Vocet", "VoiceInk"}, bench_prefix),
+                         ["/Applications/Vocet.app/Contents/MacOS/Vocet",
+                          "/bench/work/Applications/VoiceInk.app/Contents/MacOS/VoiceInk"])
+        self.assertEqual(macos.other_apps(BindingTests.ROWS[:3], own, {"Vocet"}, bench_prefix), [])
+        self.assertIn("VoiceInk", macos.benchmarked_names())
+
     def test_installs_always_go_to_the_benchs_own_folder(self):
         import macos
         os.environ["BENCH_APPS"] = "/Applications"
@@ -329,6 +340,32 @@ class SetupTests(unittest.TestCase):
                     bench.setup("x", ci=False)
             finally:
                 bench.app_config = orig
+
+
+class GrantTests(unittest.TestCase):
+    """A VM grants permissions through ./bench (`BENCH_CI=1 ./bench setup ...`); a host never does."""
+
+    def setup_env(self, vm: bool, env_ci: str):
+        a, seen = app(name="x.shipped"), {}
+        orig = (bench.app_config, bench.in_vm, bench.subprocess.run, os.environ.get("BENCH_CI"))
+        bench.app_config, bench.in_vm = (lambda n: a), (lambda: vm)
+        bench.subprocess.run = lambda cmd, check, env: seen.update(env)
+        os.environ["BENCH_CI"] = env_ci
+        try:
+            bench.setup("x", ci=False, overwrite=True)
+        finally:
+            bench.app_config, bench.in_vm, bench.subprocess.run = orig[:3]
+            if orig[3] is None:
+                os.environ.pop("BENCH_CI", None)
+            else:
+                os.environ["BENCH_CI"] = orig[3]
+        return seen.get("BENCH_CI")
+
+    def test_an_inherited_bench_ci_grants_in_a_vm_only(self):
+        self.assertEqual(self.setup_env(vm=True, env_ci="1"), "1")
+        self.assertEqual(self.setup_env(vm=False, env_ci=""), "")
+        with self.assertRaisesRegex(SystemExit, "only in a virtual machine"):
+            self.setup_env(vm=False, env_ci="1")
 
 
 class LogTests(unittest.TestCase):

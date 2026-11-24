@@ -139,9 +139,18 @@ def setup(name: str, ci: bool, overwrite: bool = False, isolated: bool = False) 
         raise SystemExit(f"{app.name} has no unattended setup yet (apps/{app.name}.json hosted_setup=false): local only")
     if app.verify:
         print(f"setup: {app.name} needs the Lead to verify in a VM: {app.verify}", file=sys.stderr)
-    env = dict(os.environ, BENCH_CI="1" if ci else "", BENCH=str(HERE), BENCH_PROFILE=app.profile,
+    grant = ci or (os.environ.get("BENCH_CI") == "1" and in_vm())  # a VM: `BENCH_CI=1 ./bench setup ...`
+    if os.environ.get("BENCH_CI") == "1" and not grant:
+        raise SystemExit("BENCH_CI=1 writes permission rows with sudo: only in a virtual machine, never on a host")
+    env = dict(os.environ, BENCH_CI="1" if grant else "", BENCH=str(HERE), BENCH_PROFILE=app.profile,
                BENCH_HOST_RUN="1" if isolated else "")
     subprocess.run(["bash", str(script)], check=True, env=env)
+
+
+def in_vm() -> bool:
+    """This Mac is a virtual machine (the hypervisor flag macOS sets for its guests)."""
+    r = subprocess.run(["sysctl", "-n", "kern.hv_vmm_present"], capture_output=True, text=True)
+    return r.stdout.strip() == "1"
 
 
 def smoke_clip(folder: pathlib.Path) -> hn.Clip:
@@ -464,9 +473,8 @@ def quit_bench_apps() -> None:
 def refuse_foreign_copies() -> None:
     """A benchmarked app running in this account from anywhere but the bench's folder would compete for the
     microphone, and the bench never quits it: the host run doesn't start."""
-    from macos import _paths, foreign_copies
-    names = {hn.load_app(p).process for p in (HERE / "apps").glob("*.*.json")}
-    if found := foreign_copies(_paths(), names, bench_apps_prefix()):
+    from macos import _paths, benchmarked_names, foreign_copies
+    if found := foreign_copies(_paths(), benchmarked_names(), bench_apps_prefix()):
         raise SystemExit("quit these first (the bench never quits apps outside its own folder):\n  " +
                          "\n  ".join(found))
 

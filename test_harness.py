@@ -160,6 +160,18 @@ class ClipTests(unittest.TestCase):
         res = hn.run_clip(clip(), Blind(app), tgt, clock, hn.Timing())
         self.assertTrue(REF.startswith(res.transcript) and res.transcript != REF)
 
+    def test_text_that_stopped_changing_before_the_speech_ended_isnt_this_clips(self):
+        class Stale(hn.StubTarget):  # another app's paste, there from the start of playback, never changing
+            def read(self):
+                return "an earlier dictation" if drv.played else ""
+        clock, app, drv, _ = rig()
+        played = drv.play
+        drv.played = False
+        drv.play = lambda c: (setattr(drv, "played", True), played(c))[1]
+        with self.assertRaises(hn.InfraError) as e:
+            hn.run_clip(clip(ref=""), drv, Stale(app), clock, hn.Timing())
+        self.assertEqual(e.exception.status, "err_stale")
+
     def test_a_microphone_that_never_opens_is_an_infrastructure_fault(self):
         clock, app, drv, tgt = rig(never_opens=True)
         with self.assertRaises(hn.InfraError) as e:
