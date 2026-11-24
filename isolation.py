@@ -117,14 +117,16 @@ def clear_state(paths: list[str], domains: list[str], home: str | None = None, r
             path.unlink()
     for d in domains:
         r = run(["defaults", "delete", d])
-        if r.returncode and not domain_missing(r.stderr or ""):
+        if r.returncode and not domain_missing(d, r.stderr or ""):
             raise SystemExit(f"couldn't clear the {d} preferences: {(r.stderr or '').strip()[:200]}")
 
 
-def domain_missing(stderr: str) -> bool:
-    """`defaults delete` failed only because the domain isn't there (already clear). macOS words it
-    "Domain (x) not found." or "... does not exist" depending on the release."""
-    return "does not exist" in stderr or ("Domain" in stderr and "not found" in stderr)
+def domain_missing(domain: str, stderr: str) -> bool:
+    """`defaults delete <domain>` failed only because that domain isn't there (already clear): a line of its
+    stderr is exactly "Domain (<domain>) not found." or "Domain <domain> does not exist", the two wordings
+    macOS releases use. Anything else, even naming the domain, is a real failure."""
+    lines = {line.strip() for line in stderr.splitlines()}
+    return f"Domain ({domain}) not found." in lines or f"Domain {domain} does not exist" in lines
 
 
 @contextlib.contextmanager

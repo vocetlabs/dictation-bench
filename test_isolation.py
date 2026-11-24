@@ -156,7 +156,7 @@ class ClearStateTests(unittest.TestCase):
             (data / "models").mkdir(parents=True)
             (data / "models" / "m.bin").write_bytes(b"m")
             calls = []
-            run = lambda cmd: calls.append(cmd) or SimpleNamespace(returncode=1, stderr="Domain (x) not found. does not exist")  # noqa: E731
+            run = lambda cmd: calls.append(cmd) or SimpleNamespace(returncode=1, stderr="Domain (com.example) not found.\nDefaults have not been changed.")  # noqa: E731
             iso.clear_state([str(data), str(home / "never-existed")], ["com.example"], home=str(home), run=run)
             self.assertFalse(data.exists())
             self.assertEqual(calls, [["defaults", "delete", "com.example"]])
@@ -206,9 +206,13 @@ class LockTests(unittest.TestCase):
                        "Domain com.prakashjoshipax.VoiceInk does not exist"):
             run = lambda cmd, e=stderr: SimpleNamespace(returncode=1, stderr=e)  # noqa: E731
             iso.clear_state([], ["com.prakashjoshipax.VoiceInk"], run=run)
-        failed = lambda cmd: SimpleNamespace(returncode=1, stderr="cfprefsd not responding")  # noqa: E731
-        with self.assertRaisesRegex(SystemExit, "couldn't clear the com.x preferences"):
-            iso.clear_state([], ["com.x"], run=failed)
+        for stderr in ("cfprefsd not responding",
+                       "Domain (com.x) not found.",  # another domain
+                       "Domain (com.x.y) found, but cfprefsd service not found.",  # names it, not missing
+                       "Domain (com.x.y) not found. does not exist, but the service is down"):
+            failed = lambda cmd, e=stderr: SimpleNamespace(returncode=1, stderr=e)  # noqa: E731
+            with self.assertRaisesRegex(SystemExit, "couldn't clear the com.x.y preferences"):
+                iso.clear_state([], ["com.x.y"], run=failed)
 
 
 class PrefTests(unittest.TestCase):
@@ -300,7 +304,20 @@ class GateTests(unittest.TestCase):
             now[0], naps[:] = 0.0, []
             left = bench.wait_for_settings(a, 90, sleep=sleep, clock=lambda: now[0])
             self.assertIn("CLEANUP_PROVIDER", left[0])
-            self.assertGreaterEqual(now[0], 90)
+            self.assertEqual(now[0], 90)  # naps capped to the time left: never past the deadline
+            self.assertEqual(naps[-1], 90 % 2 or 2)
+            # a 1 s wait naps 1 s, not 2; a match first seen after the deadline (a slow read) is a failure
+            env.write_text("DICTATION_KEY=RightOption\nPARAKEET_MODEL=p\n")
+            now[0], naps[:] = 0.0, []
+            self.assertEqual(bench.wait_for_settings(a, 1, sleep=sleep, clock=lambda: now[0]), [])
+            ticks = iter([0.0, 1.5])
+            late = bench.wait_for_settings(a, 1, sleep=sleep, clock=lambda: next(ticks))
+            self.assertIn("only after the 1 s deadline", late[0])
+            env.write_text("DICTATION_KEY=RightOption\n")
+            now[0], naps[:] = 0.0, []
+            self.assertTrue(bench.wait_for_settings(a, 1, sleep=lambda s: (naps.append(s), now.__setitem__(0, now[0] + s)),
+                                                    clock=lambda: now[0]))
+            self.assertEqual((naps, now[0]), ([1], 1))
 
     def test_settings_inside_json_preference_data_and_env_files_are_read_back(self):
         import plistlib

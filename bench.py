@@ -152,15 +152,21 @@ def setup(name: str, ci: bool, overwrite: bool = False, isolated: bool = False) 
 def wait_for_settings(app: hn.App, timeout: float = 90, read_pref=None, export=None,
                       sleep=None, clock=None) -> list[str]:
     """Waits until the app holds every setting its profile pins (an app that writes its settings file some
-    time after launch, e.g. OpenWhispr's userData/.env); the problems still left after `timeout` seconds."""
+    time after launch, e.g. OpenWhispr's userData/.env); the problems still left after `timeout` seconds.
+    A match seen only after the deadline counts as a failure, and no nap runs past the deadline."""
     import time
     sleep, clock = sleep or time.sleep, clock or time.monotonic
     end = clock() + timeout
     while True:
         _, problems = settings_problems(app, read_pref, export)
-        if not problems or clock() >= end:
+        left = end - clock()
+        if left < 0:
+            return problems or [f"the settings matched only after the {timeout} s deadline"]
+        if not problems:
+            return []
+        if left == 0:
             return problems
-        sleep(2)
+        sleep(min(2, left))
 
 
 def in_vm() -> bool:
