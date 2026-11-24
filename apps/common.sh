@@ -78,20 +78,36 @@ start() {
 }
 
 # restart_after_download <App.app> <process> <file> <bytes> <what>: a model the app downloads itself (a
-# person starts it in the app) is only loaded after a restart. If <file> is missing, wait (up to
-# BENCH_DOWNLOAD_WAIT seconds, default 3600) until it has its full size, then quit the bench's copy by its
-# bundle path and start it again. Nothing to do when the file was already there at launch.
+# person starts it in the app) is only loaded after a restart. Waits (up to BENCH_DOWNLOAD_WAIT seconds,
+# default 3600) until <file> has its full size, then always restarts the bench's copy, even if the download
+# had finished by launch: quit_bench_app, then start.
 restart_after_download() {
   local app=$1 proc=$2 file=$3 bytes=$4 what=$5 waited=0 limit=${BENCH_DOWNLOAD_WAIT:-3600}
-  [ -f "$file" ] && [ "$(stat -f %z "$file")" = "$bytes" ] && return 0
-  log "$what: download it in $proc now; setup waits up to ${limit}s, then restarts $proc to load it"
   until [ -f "$file" ] && [ "$(stat -f %z "$file")" = "$bytes" ]; do
+    [ "$waited" -eq 0 ] && log "$what: download it in $proc now; setup waits up to ${limit}s, then restarts $proc"
     [ "$waited" -lt "$limit" ] || { log "$what: not downloaded within ${limit}s"; return 1; }
     sleep 10; waited=$((waited + 10))
   done
-  pkill -TERM -U "$(id -u)" -f "^$APPS/$app/Contents/MacOS/" || true
-  for _ in $(seq 1 50); do pgrep -U "$(id -u)" -f "^$APPS/$app/Contents/MacOS/" >/dev/null || break; sleep 0.2; done
+  quit_bench_app "$app" || return 1
   start "$app" "$proc"
+}
+
+# quit_bench_app <App.app>: TERM by PID to this account's processes launched from the bench's copy, then
+# KILL; fails unless every one of those PIDs has exited (10 s, then 5 s), so a relaunch is a new process.
+quit_bench_app() {
+  local pids pid alive i sig
+  pids=$(pgrep -U "$(id -u)" -f "^$APPS/$1/Contents/MacOS/" || true)
+  [ -n "$pids" ] || return 0
+  for sig in TERM KILL; do
+    for pid in $pids; do kill -"$sig" "$pid" 2>/dev/null || true; done
+    for i in $(seq 1 $([ $sig = TERM ] && echo 50 || echo 25)); do
+      alive=""
+      for pid in $pids; do kill -0 "$pid" 2>/dev/null && alive=1; done
+      [ -n "$alive" ] || return 0
+      sleep 0.2
+    done
+  done
+  log "$1 didn't quit (pids $pids): not restarted"; return 1
 }
 
 # ollama_model <name>: the pinned Ollama model for a local-cleanup profile, pulled if missing (Ollama must be
