@@ -49,6 +49,6 @@
     "CLEANUP_PROVIDER": "local",
     "LOCAL_CLEANUP_MODEL": "qwen3.5-2b-q4_k_m"
   },
-  "verify": "verify-on-host: in an 8 GB VM its cleanup takes over 60 s (paravirtual GPU), so the 30 s smoke needs the host's Metal GPU, on the benchmark account before its night",
-  "notes": "Guest, on this device, English. Activation hold (onboarding sets push-to-talk for new users; was tap in BENCH1). Key Right Option: its Globe/Fn default can't be pressed by software. shipped: onboarding's local setup turns cleanup on on every Mac with 16 GB+ (off and unavailable under 16 GB). VM check 2026-11-23: transcription and paste work; cleanup late (12/12 words right) under a 60 s deadline."
+  "verify": "",
+  "notes": "Guest, on this device, English. Activation hold (onboarding sets push-to-talk for new users; was tap in BENCH1). Key Right Option: its Globe/Fn default can't be pressed by software. shipped: onboarding's local setup turns cleanup on on every Mac with 16 GB+ (off and unavailable under 16 GB). VM check 2026-11-23: transcription and paste work; cleanup late (12/12 words right) under a 60 s deadline. Host check 2026-11-24 (owner's MacBook Pro, vocetbench account): smoke ok, 12/12 words right, e2t 6.3 s (attempt 1); verify cleared."
 }
