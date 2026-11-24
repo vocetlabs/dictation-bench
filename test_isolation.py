@@ -483,30 +483,38 @@ class VmFindingsTests(unittest.TestCase):
         self.assertIn("8 GB of free memory", bench.app_config("fluidvoice:best-asr").verify)
         self.assertIn("Ollama provider", bench.app_config("fluidvoice:local-cleanup").verify)
 
-    def test_setup_restarts_the_app_after_its_in_app_download(self):
+    def run_restart(self, model: pathlib.Path, download: bool, quits: bool, wait: str = "30"):
+        """common.sh's restart helpers with `start`, `pgrep`, `kill` and `sleep` stubbed; returns (code, stdout)."""
         import subprocess
+        script = (HERE / "apps" / "common.sh").read_text()
+        helpers = script[script.index("restart_after_download() {"):script.index("# ollama_model <name>:")]
+        state = model.with_suffix(".alive")
+        state.write_text("1")
+        stubs = (f'start() {{ echo "STARTED $1"; }}; pgrep() {{ echo 4242; }}; '
+                 f'kill() {{ case "$1" in -0) [ -s "{state}" ];; *) echo "SIG$1 $2"; '
+                 + (f': > "{state}";; esac; }}; ' if quits else 'true;; esac; }; ')
+                 + ("sleep() { " + (f'head -c 5 /dev/zero > "{model}"; ' if download else ":; ") + "}; "))
+        out = subprocess.run(["bash", "-c", "log() { :; }; APPS=/bench/work/Applications\n" + helpers + stubs +
+                              f'restart_after_download Muesli.app Muesli "{model}" 5 cleanup'],
+                             capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "BENCH_DOWNLOAD_WAIT": wait})
+        return out.returncode, out.stdout.split()
+
+    def test_setup_restarts_the_app_after_its_in_app_download(self):
         for name, sh in (("Muesli.app", "muesli.sh"), ("FluidVoice.app", "fluidvoice.sh")):
             self.assertIn(f"restart_after_download {name}", (HERE / "apps" / sh).read_text())
         with tempfile.TemporaryDirectory() as d:
             model = pathlib.Path(d) / "model.bin"
-            stubs = (f'start() {{ echo "STARTED $1"; }}; pkill() {{ echo QUIT; }}; pgrep() {{ return 1; }}; '
-                     f'sleep() {{ head -c 5 /dev/zero > "{model}"; }}; ')
-            script = (HERE / "apps" / "common.sh").read_text()
-            helper = script[script.index("restart_after_download() {"):].split("\n}\n")[0] + "\n}\n"
-            run = lambda: subprocess.run(  # noqa: E731
-                ["bash", "-c", "log() { :; }; APPS=/bench/work/Applications\n" + helper + stubs +
-                 f'restart_after_download Muesli.app Muesli "{model}" 5 cleanup'], capture_output=True, text=True,
-                env={"PATH": "/usr/bin:/bin", "BENCH_DOWNLOAD_WAIT": "30"})
-            out = run()  # downloaded while setup waits: quit and started again
-            self.assertEqual((out.returncode, out.stdout.split()), (0, ["QUIT", "STARTED", "Muesli.app"]), out.stderr)
-            out = run()  # already there at launch: nothing to restart
-            self.assertEqual((out.returncode, out.stdout), (0, ""))
-            model.unlink()
-            stubs = stubs.replace(f'head -c 5 /dev/zero > "{model}"', ":")
-            out = subprocess.run(["bash", "-c", "log() { :; }; APPS=/b\n" + helper + stubs +
-                                  f'restart_after_download Muesli.app Muesli "{model}" 5 cleanup'],
-                                 capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "BENCH_DOWNLOAD_WAIT": "20"})
-            self.assertEqual((out.returncode, out.stdout), (1, ""))  # never downloaded: setup fails, no restart
+            # downloaded while setup waits: quit by PID, then started again
+            self.assertEqual(self.run_restart(model, download=True, quits=True),
+                             (0, ["SIG-TERM", "4242", "STARTED", "Muesli.app"]))
+            # already complete at launch (finished during start's wait): still restarted
+            self.assertEqual(self.run_restart(model, download=False, quits=True),
+                             (0, ["SIG-TERM", "4242", "STARTED", "Muesli.app"]))
+            # the old process never exits: TERM, KILL, then an error and no relaunch
+            code, out = self.run_restart(model, download=False, quits=False)
+            self.assertEqual((code, out), (1, ["SIG-TERM", "4242", "SIG-KILL", "4242"]))
+            model.unlink()  # never downloaded: setup fails, nothing restarted
+            self.assertEqual(self.run_restart(model, download=False, quits=True, wait="20"), (1, []))
 
 
 class LogTests(unittest.TestCase):
