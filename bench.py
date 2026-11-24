@@ -267,6 +267,8 @@ def settings_problems(app: hn.App, read_pref=None, export=None) -> tuple[dict, l
         have = got.get(k)
         if isinstance(want, bool) and isinstance(have, str):
             have = have.strip() in ("1", "true", "YES")
+        if isinstance(want, dict) and isinstance(have, dict):  # only the keys the profile pins (Handy fills in
+            have = {sk: have.get(sk) for sk in want}           #   every provider's entry at launch)
         if have != want:
             problems.append(f"{k} is {have!r}, the profile says {want!r}")
     for f in app.absent_files:  # e.g. no cleanup model for a profile whose cleanup is off

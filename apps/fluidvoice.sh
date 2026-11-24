@@ -18,7 +18,7 @@ case $PROFILE in
   best-asr)
     defaults write $d SelectedSpeechModel -string whisper-large
     defaults write $d EnableAIProcessing -bool false
-    log "best-asr: let FluidVoice download Whisper Large (Settings > Voice Engine)" ;;
+    ;;
   local-cleanup)
     ollama_model gemma3:4b
     defaults write $d SelectedSpeechModel -string parakeet-tdt
@@ -31,3 +31,7 @@ case $PROFILE in
     defaults write $d EnableAIProcessing -bool false ;;
 esac
 start FluidVoice.app FluidVoice
+if [ "$PROFILE" = best-asr ]; then  # needs 8 GB free memory to load (verify on a 16 GB host)
+  restart_after_download FluidVoice.app FluidVoice "$HOME/Library/Caches/WhisperModels/whisper-large-v3-Q8_0.gguf" \
+    1668741440 "best-asr: Whisper Large (Settings > Voice Engine > Whisper Large)"
+fi

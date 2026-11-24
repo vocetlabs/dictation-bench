@@ -84,18 +84,22 @@ model file's sha256 (a Core ML folder: the hash of its files' hashes) and the to
 the profile's settings, the settings files' sha256, peak resident memory, and the machine (chip, memory,
 macOS version and build, power source, load average).
 
-**Still to verify in a VM before the first scored run** (the Lead; each profile's `verify` field, which
-blocks scored runs until cleared): Handy's "More accurate" pick for English is Qwen3-ASR 1.7B in its model
-picker; Handy and FluidVoice paste the Ollama-cleaned text (`gemma3:4b` served at localhost:11434;
-FluidVoice needs its Ollama provider verified once in the app); Muesli downloads Cleanup Lite and cleans a
-dictation; FluidVoice downloads Whisper Large (its files then go into the profile's `model.files`); Vocet
-0.2.0 without the Gemma file pastes raw OrukQwen text and doesn't download Gemma again; the bench's Vocet
-copy runs in the bench account, which holds no saved key. **Verify on the host** (no VM can do it; a
-30 s smoke in the bench account, before the profile's first night): `voiceink.local-cleanup` (Refine
-needs 16 GB; the VMs have 8 GB) and `openwhispr.shipped` (its Qwen3.5 2B cleanup takes over 60 s on a VM's
-paravirtual GPU). `voiceink.shipped`, `voiceink.best-asr` and `openwhispr.best-asr` pass the smoke and
-10 clips in the bench VM (`dictation-vm-benchapps`, README); VoiceInk best-asr was probed there with
-Parakeet Ultra (10 of 10 clips ok; 10 clips decide nothing about accuracy, the pick follows the registry).
+**Verified in the bench VM** (2026-11-23/24, `dictation-vm-benchapps`, smoke plus 10 clips each, unscored):
+Handy's Models page tags Qwen3-ASR 1.7B as "More accurate" (`handy.best-asr`); Handy pastes Ollama-cleaned
+text (`handy.local-cleanup`; `ollama list` shows `gemma3:4b` as 68ceab7e468a, the pinned digest); Muesli
+downloads Cleanup Lite and cleans dictations (`muesli.local-cleanup`); Vocet 0.2.0 without the Gemma file
+pastes OrukQwen text and doesn't download Gemma again (`vocet.best-asr`). Their `verify` items are cleared.
+`voiceink.shipped`, `voiceink.best-asr` (Parakeet Ultra) and `openwhispr.best-asr` pass the smoke and 10 clips
+there too (10 clips decide nothing about accuracy; VoiceInk's pick follows its registry).
+
+**Verify on the host** (each profile's `verify` field, which blocks scored runs until cleared; no VM can
+do these, so a 30 s smoke in the bench account before the profile's first night): `voiceink.local-cleanup`
+(Refine needs 16 GB; the VMs have 8 GB), `openwhispr.shipped` (its Qwen3.5 2B cleanup takes over 60 s on a
+VM's paravirtual GPU), `fluidvoice.best-asr` (Whisper Large needs 8 GB of free memory; the 8 GB VM refuses it, so a 16 GB Mac; its
+gguf then goes into `model.files`) and `fluidvoice.local-cleanup` (the preseeded Ollama provider isn't
+honoured: select and verify it once in FluidVoice's AI settings, then check the text is cleaned). A model an
+app downloads itself (Muesli's Cleanup Lite, FluidVoice's Whisper Large) is loaded only after a restart:
+setup waits for the download to complete (`BENCH_DOWNLOAD_WAIT`, default 1 h) and restarts the app.
 
 **VoiceInk's trial.** The official release runs a 7-day trial that starts at its first launch (the start
 date goes into the login Keychain of the account it runs in, which the bench never writes). After it, every
