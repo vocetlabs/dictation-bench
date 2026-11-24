@@ -142,7 +142,8 @@ def setup(name: str, ci: bool, overwrite: bool = False, isolated: bool = False) 
     grant = ci or (os.environ.get("BENCH_CI") == "1" and in_vm())  # a VM: `BENCH_CI=1 ./bench setup ...`
     if os.environ.get("BENCH_CI") == "1" and not grant:
         raise SystemExit("BENCH_CI=1 writes permission rows with sudo: only in a virtual machine, never on a host")
-    gate = HOST_GATE.read_text().strip() if isolated and HOST_GATE.exists() else ""
+    gate = (HOST_GATE.read_text().strip()
+            if isolated and HOST_GATE.is_file() and not HOST_GATE.is_symlink() else "")
     env = dict(os.environ, BENCH_CI="1" if grant else "", BENCH=str(HERE), BENCH_PROFILE=app.profile,
                BENCH_HOST_RUN=gate)  # host-run's nonce, only from host-run itself
     subprocess.run(["bash", str(script)], check=True, env=env)
@@ -458,8 +459,9 @@ def host_plan(jobs: list[str], passes: int, first_pass: int = 1, seed: int = 202
 
 MACHINE_FILE = HERE / "work" / "host-input.json"  # the input device to put back after a cut-off host run
 HOST_LOCK = HERE / "work" / "host.lock"
-HOST_GATE = HERE / "work" / "host-run.gate"  # a nonce that exists only while host-run runs: apps/voiceink.sh
-                                            #   launches VoiceInk on a host only when it matches
+HOST_GATE = HERE / "work" / "host-run.gate"  # "<host-run's PID> <nonce>", only while host-run runs (0600, never
+                                            #   through a symlink): apps/voiceink.sh launches VoiceInk on a host
+                                            #   only when it matches and that PID is a live host-run
 
 
 def bench_apps_prefix() -> str:
@@ -509,7 +511,8 @@ def host_run(a: argparse.Namespace) -> int:
     also on SIGTERM and SIGHUP; `restore-host` finishes that after a crash."""
     from datetime import datetime
     import secrets
-    from isolation import check_bench_account, check_bench_dirs, clear_state, host_lock, on_termination, signals_held
+    from isolation import (check_bench_account, check_bench_dirs, clear_state, host_lock, on_termination,
+                           signals_held, write_new)
     from macos import hardware, restore_input, save_input, vm_running
     check_bench_account()
     check_bench_dirs(HERE)
@@ -538,10 +541,10 @@ def host_run(a: argparse.Namespace) -> int:
         on_termination()
         with signals_held():  # saved before anything changes, and never half-written
             state = save_input()
-            MACHINE_FILE.write_text(json.dumps(state))
+            write_new(MACHINE_FILE, json.dumps(state))
         problems: list[str] = []
         try:
-            HOST_GATE.write_text(secrets.token_hex(16))
+            write_new(HOST_GATE, f"{os.getpid()} {secrets.token_hex(16)}")  # host-run's PID, then the nonce
             quit_bench_apps()
             machine(False)
             for step in plan:

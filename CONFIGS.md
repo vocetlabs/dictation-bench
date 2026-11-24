@@ -172,3 +172,6 @@ is the same configuration as shipped and isn't run on its own.
 - 2026-11-23 (BENCH2 review): harness version 3. A read that straddles the deadline no longer counts, so
   runs with harness version 2 don't pool with later ones. Ollama cleanup models are checked against their
   full manifest digest. Host runs move to the bench's own macOS account.
+- 2026-11-23 (BENCH2 review): harness version 4. The refusal check reads every snapshot, including a read
+  that crosses the deadline (it isn't scored, but a notice in it refuses the clip); runs and `partial` rows
+  from earlier versions don't resume or pool.

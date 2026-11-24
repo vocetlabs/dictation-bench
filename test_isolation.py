@@ -102,6 +102,28 @@ class BenchDirTests(unittest.TestCase):
         self.assertNotEqual(self.setup_script(), 0)
 
 
+class WriteNewTests(unittest.TestCase):
+    def test_the_gate_is_created_afresh_and_never_through_a_symlink(self):
+        with tempfile.TemporaryDirectory() as d:
+            gate, target = pathlib.Path(d) / "host-run.gate", pathlib.Path(d) / "owner-file"
+            gate.write_text("stale")
+            iso.write_new(gate, "123 abc")  # a stale regular file is replaced
+            self.assertEqual((gate.read_text(), gate.stat().st_mode & 0o777), ("123 abc", 0o600))
+            gate.unlink()
+            target.write_text("keep")
+            gate.symlink_to(target)
+            with self.assertRaisesRegex(SystemExit, "symlink"):
+                iso.write_new(gate, "123 abc")
+            self.assertEqual(target.read_text(), "keep")  # never truncated
+
+    def test_host_run_writes_its_files_with_write_new_only(self):
+        src = (HERE / "bench.py").read_text()
+        self.assertNotIn("HOST_GATE.write_text", src)
+        self.assertNotIn("MACHINE_FILE.write_text", src)
+        self.assertIn("write_new(HOST_GATE, f\"{os.getpid()} ", src)
+        self.assertEqual(hn.HARNESS_VERSION, "4")
+
+
 class RestoreHostTests(unittest.TestCase):
     def test_apps_are_quit_even_when_the_input_cant_be_put_back(self):
         import macos

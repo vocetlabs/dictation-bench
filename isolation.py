@@ -88,6 +88,17 @@ def check_bench_dirs(bench: pathlib.Path, home: str | None = None) -> None:
         raise SystemExit(f"the bench's app folder {real} isn't inside this account's home ({root})")
 
 
+def write_new(path: pathlib.Path, text: str) -> None:
+    """Creates `path` afresh (mode 0600), never through a symlink: a stale regular file is removed first, and
+    the create is exclusive and refuses to follow links (O_EXCL | O_NOFOLLOW)."""
+    if path.is_symlink():
+        raise SystemExit(f"{path} is a symlink: refusing to write through it")
+    path.unlink(missing_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+
+
 def clear_state(paths: list[str], domains: list[str], home: str | None = None, run=_run) -> None:
     """Deletes an app's data folders and preference domains in this (the bench's) account, so setup starts
     from nothing. Refuses any path outside this account's home."""
