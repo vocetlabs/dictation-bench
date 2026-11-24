@@ -17,12 +17,49 @@
     "~/Library/Preferences/com.prakashjoshipax.VoiceInk.plist"
   ],
   "logs": "unified:VoiceInk:com.prakashjoshipax",
+  "state": {
+    "paths": [
+      "~/Library/Application Support/com.prakashjoshipax.VoiceInk",
+      "~/Library/Application Support/VoiceInk",
+      "~/Library/Application Support/FluidAudio",
+      "~/Library/Caches/com.prakashjoshipax.VoiceInk",
+      "~/Library/HTTPStorages/com.prakashjoshipax.VoiceInk"
+    ],
+    "defaults": [
+      "com.prakashjoshipax.VoiceInk"
+    ]
+  },
+  "settings_source": {
+    "defaults": "com.prakashjoshipax.VoiceInk"
+  },
+  "refusal_text": [
+    "Your trial has ended",
+    "Upgrade to VoiceInk Pro",
+    "tryvoiceink.com/buy"
+  ],
   "model": {
     "id": "Parakeet V3 (parakeet-tdt-0.6b-v3), Core ML, FluidInference/parakeet-tdt-0.6b-v3-coreml@7dd20fe6 + VoiceInk Refine V1 (MLX, beingpax/VoiceInk-Refine-V1@ad665418)",
-    "size_mb": 1549,
-    "backend": "FluidAudio Core ML, live transcription on; Refine on MLX through its XPC service"
+    "size_mb": 1529,
+    "backend": "FluidAudio Core ML, live transcription on; Refine on MLX through its XPC service",
+    "files": [
+      "~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3",
+      "~/Library/Application Support/FluidAudio/Models/silero-vad",
+      "~/Library/Application Support/com.prakashjoshipax.VoiceInk/VoiceInkRefine"
+    ],
+    "cleanup_model": "VoiceInk Refine V1"
   },
   "language": "auto",
   "cleanup": "on (VoiceInk Refine V1, on device, its own system prompt)",
-  "notes": "Maintainer's release in its 7-day trial (starts at first launch; after it every paste gets an upgrade notice, so finish runs within 7 days of setup). Onboarding's local path: Parakeet V3, starter Dictation mode (text formatting on, live transcription on); shortcut Right Option (onboarding asks, no default), recording mode hybrid (default). local-cleanup: shipped speech settings unchanged; AI enhancement on with VoiceInk Refine, the app's own on-device model (no key). VoiceInk offers Refine only on Apple silicon with 16 GB of memory or more, so this profile can't run in the 6-8 GB VMs. Not run in a VM (Refine needs 16 GB); smoke it on the host at the start of its night."
+  "settings": {
+    "hasCompletedOnboardingV2": true,
+    "CurrentTranscriptionModel": "parakeet-tdt-0.6b-v3",
+    "activeConfigurationId": "10000000-0000-0000-0000-000000000001",
+    "modeConfigurationsV2/0/selectedTranscriptionModelName": "parakeet-tdt-0.6b-v3",
+    "modeConfigurationsV2/0/selectedLanguage": "auto",
+    "modeConfigurationsV2/0/isAIEnhancementEnabled": true,
+    "modeConfigurationsV2/0/isRealtimeTranscriptionEnabled": true,
+    "modeConfigurationsV2/0/selectedAIProvider": "VoiceInk Refine"
+  },
+  "verify": "verify-on-host: VoiceInk offers Refine only with 16 GB of memory (the VMs have 8 GB); a 30 s smoke on the benchmark account before its night",
+  "notes": "Maintainer's release in its 7-day trial: it starts at the first launch (the date goes into the login Keychain, which the bench never writes); after it every paste starts with an upgrade notice, which stops the run (refusal_text). Validate in a VM; on a host, launch it only in the account and on the night of its runs. Onboarding's local path: starter Dictation mode (text formatting on, live transcription on); shortcut Right Option (onboarding asks, no default), recording mode hybrid (default). local-cleanup: shipped's speech settings; AI enhancement on with VoiceInk Refine, the app's own on-device model (no key)."
 }

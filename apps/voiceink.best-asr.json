@@ -17,12 +17,45 @@
     "~/Library/Preferences/com.prakashjoshipax.VoiceInk.plist"
   ],
   "logs": "unified:VoiceInk:com.prakashjoshipax",
+  "state": {
+    "paths": [
+      "~/Library/Application Support/com.prakashjoshipax.VoiceInk",
+      "~/Library/Application Support/VoiceInk",
+      "~/Library/Application Support/FluidAudio",
+      "~/Library/Caches/com.prakashjoshipax.VoiceInk",
+      "~/Library/HTTPStorages/com.prakashjoshipax.VoiceInk"
+    ],
+    "defaults": [
+      "com.prakashjoshipax.VoiceInk"
+    ]
+  },
+  "settings_source": {
+    "defaults": "com.prakashjoshipax.VoiceInk"
+  },
+  "refusal_text": [
+    "Your trial has ended",
+    "Upgrade to VoiceInk Pro",
+    "tryvoiceink.com/buy"
+  ],
   "model": {
-    "id": "Parakeet V3 (parakeet-tdt-0.6b-v3), Core ML, FluidInference/parakeet-tdt-0.6b-v3-coreml@7dd20fe6",
-    "size_mb": 469,
-    "backend": "FluidAudio Core ML, live transcription on"
+    "id": "Parakeet Ultra (parakeet-ultra), Core ML, FluidInference/parakeet-ultra-coreml@95eaa59a",
+    "size_mb": 640,
+    "backend": "FluidAudio Core ML, live transcription on",
+    "files": [
+      "~/Library/Application Support/FluidAudio/Models/parakeet-ultra",
+      "~/Library/Application Support/FluidAudio/Models/silero-vad"
+    ]
   },
   "language": "en",
   "cleanup": "off",
-  "notes": "Maintainer's release in its 7-day trial (starts at first launch; after it every paste gets an upgrade notice, so finish runs within 7 days of setup). Onboarding's local path: Parakeet V3, starter Dictation mode (text formatting on, live transcription on); shortcut Right Option (onboarding asks, no default), recording mode hybrid (default). best-asr: VoiceInk marks no local model as recommended; onboarding requires Parakeet V3, so it is the maintainer-recommended local model. Language English (Parakeet V3 takes a language hint); nothing else changed. VM check 2026-11-23: smoke 12/12, 10 clips 10 ok."
+  "settings": {
+    "hasCompletedOnboardingV2": true,
+    "CurrentTranscriptionModel": "parakeet-ultra",
+    "activeConfigurationId": "10000000-0000-0000-0000-000000000001",
+    "modeConfigurationsV2/0/selectedTranscriptionModelName": "parakeet-ultra",
+    "modeConfigurationsV2/0/selectedLanguage": "en",
+    "modeConfigurationsV2/0/isAIEnhancementEnabled": false,
+    "modeConfigurationsV2/0/isRealtimeTranscriptionEnabled": true
+  },
+  "notes": "Maintainer's release in its 7-day trial: it starts at the first launch (the date goes into the login Keychain, which the bench never writes); after it every paste starts with an upgrade notice, which stops the run (refusal_text). Validate in a VM; on a host, launch it only in the account and on the night of its runs. Onboarding's local path: starter Dictation mode (text formatting on, live transcription on); shortcut Right Option (onboarding asks, no default), recording mode hybrid (default). best-asr: Parakeet Ultra, language English. VoiceInk marks no model as recommended in its library; its v2.27 registry rates Ultra 0.95 (V3 0.94) and describes it as 'Parakeet V3 post-trained by Moondream for more accurate transcription'; of the models tied at 0.95 it is listed first and the one described as more accurate."
 }

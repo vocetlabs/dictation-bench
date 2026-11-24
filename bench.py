@@ -196,13 +196,48 @@ def log_health(app: hn.App) -> str:
     return f"app log, last 10 min: {len(lines)} lines, {err} with 'error', {warn} with 'warn' (counts only)"
 
 
-def settings_problems(app: hn.App, read_pref=None) -> tuple[dict, list[str]]:
+def read_env_file(path: pathlib.Path) -> dict[str, str]:
+    """KEY=VALUE lines (an Electron app's .env): only the keys a profile names are ever looked at."""
+    out = {}
+    for line in path.read_text().splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip().strip('"')
+    return out
+
+
+def json_in_pref(key: str, domain: str, export=None):
+    """A value inside JSON an app keeps in one preference ("modeConfigurationsV2/0/selectedLanguage": the
+    preference modeConfigurationsV2, JSON data, item 0, field selectedLanguage); None when any part is missing."""
+    import plistlib
+    import isolation
+    raw = (export or isolation.export_domain)(domain)
+    name, *path = key.split("/")
+    try:
+        value = plistlib.loads(raw).get(name) if raw else None
+        value = json.loads(value) if isinstance(value, (bytes, str)) else value
+        for part in path:
+            value = value[int(part)] if isinstance(value, list) else value.get(part)
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return None
+    return value
+
+
+def settings_problems(app: hn.App, read_pref=None, export=None) -> tuple[dict, list[str]]:
     """The profile's declared settings as the app has them now, and what differs (BENCH2: a run is scored
     only under the settings its label names). Also the cleanup model's digest for an Ollama profile."""
     import isolation
     read_pref = read_pref or isolation.read_pref
     src, got, problems = app.settings_source, {}, []
-    if src.get("file"):
+    if src.get("env"):
+        path = pathlib.Path(os.path.expanduser(src["env"]))
+        try:
+            env = read_env_file(path)
+        except OSError as e:
+            return {}, [f"can't read {src['env']}: {e}"]
+        for k in app.settings:
+            got[k] = env.get(k)
+    elif src.get("file"):
         path = pathlib.Path(os.path.expanduser(src["file"]))
         try:
             data = json.loads(path.read_text())
@@ -213,8 +248,7 @@ def settings_problems(app: hn.App, read_pref=None) -> tuple[dict, list[str]]:
             got[k] = data.get(k)
     elif src.get("defaults"):
         for k in app.settings:
-            v = read_pref(k, src["defaults"])
-            got[k] = v
+            got[k] = json_in_pref(k, src["defaults"], export) if "/" in k else read_pref(k, src["defaults"])
     elif app.settings:
         problems.append(f"{app.name} has settings but no settings_source")
     for k, want in app.settings.items():
@@ -288,6 +322,9 @@ def run_job(app: hn.App, *, smoke_only: bool = False, accuracy_only: bool = Fals
                 except hn.InfraError as e:
                     res = hn.Result(e.status, error=str(e))
                 driver.recover(restart=res.status != "ok")  # a failed smoke try leaves an unknown state
+                if hit := hn.refusal(res.transcript, app.refusal_text):
+                    print(f"the smoke dictation pasted {app.base}'s refusal notice ({hit!r}): stop", file=sys.stderr)
+                    return 3
                 ok, msg = smoke_ok(res)
                 print(f"{msg} (attempt {attempt})", flush=True)
                 if ok:
@@ -320,8 +357,12 @@ def run_job(app: hn.App, *, smoke_only: bool = False, accuracy_only: bool = Fals
         info["fingerprint"] = hn.fingerprint(**info)
         info["hardware"] = hardware()  # not in the fingerprint: the load changes between resumes
         before = log_counts(app)
-        rows = hn.run_all(clips, driver, target, hn.Clock(), timing, out, run=info,
-                          restart_after_ambiguous=restart, attempts=attempts)
+        try:
+            rows = hn.run_all(clips, driver, target, hn.Clock(), timing, out, run=info,
+                              restart_after_ambiguous=restart, attempts=attempts, refusal_text=app.refusal_text)
+        except hn.AppRefused as e:
+            print(f"{app.name}: {e}", file=sys.stderr)
+            return 3
         if app.log_counts:  # e.g. how many cleanups were applied or fell back, over this run's clips
             meta = json.loads((out / "run.json").read_text())
             meta["app_log_counts"] = count_diff(log_counts(app), before)

@@ -145,6 +145,8 @@ class App:
     settings_source: dict = field(default_factory=dict)  # {file[, key]} or {defaults}: where the app keeps
                                                   #   `settings`, read back before a run is scored
     absent_files: list = field(default_factory=list)  # files the profile requires to be missing (checked)
+    refusal_text: list = field(default_factory=list)  # text that means the app refused to dictate (VoiceInk's
+                                                  #   trial-ended notice): the clip fails unscored, the run stops
 
     @property
     def base(self) -> str:
@@ -242,6 +244,17 @@ def accuracy_only() -> Timing:
     2 s settle, 30 s from the release); only the latency isn't reported, for a machine whose speed doesn't
     count (a CI runner)."""
     return Timing(timed=False)
+
+
+class AppRefused(Exception):
+    """The app pasted its own refusal (a licence or trial notice) instead of, or around, the dictation: the
+    run can't be scored under the app's label, so it stops."""
+
+
+def refusal(text: str, phrases) -> str:
+    """The first of the app's refusal phrases the text contains (case-insensitive), or ""."""
+    low = text.lower()
+    return next((p for p in phrases if p.lower() in low), "")
 
 
 class InfraError(Exception):
@@ -437,10 +450,13 @@ def fmt(v) -> str:
 
 
 def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, timing: Timing, out: pathlib.Path,
-            *, run: dict, restart_after_ambiguous: bool, attempts: int = 3, log=None) -> dict[str, dict]:
+            *, run: dict, restart_after_ambiguous: bool, attempts: int = 3, log=None,
+            refusal_text=()) -> dict[str, dict]:
     """Runs the clips into out/results.csv, with out/run.json describing the run (`run`, which must carry
     a "fingerprint"). A rerun resumes only with the same fingerprint, and keeps only rows of these clips.
-    App outcomes are final; infrastructure faults are retried. Returns the rows by clip_id."""
+    App outcomes are final; infrastructure faults are retried. A paste holding one of `refusal_text` (the app's
+    licence or trial notice) records the clip as `refused`, which no score accepts, and raises AppRefused.
+    Returns the rows by clip_id."""
     log = log or flushed  # one line per clip, visible at once in a CI log (stdout is a pipe there)
     out.mkdir(parents=True, exist_ok=True)
     meta_path, rows_path = out / "run.json", out / "results.csv"
@@ -463,6 +479,8 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
                 res = run_clip(clip, driver, target, clock, timing)
             except InfraError as e:
                 res = Result(e.status, error=str(e))
+            if refusal(res.transcript, refusal_text):
+                break
             if res.status == "ok":
                 break
             # Any outcome but ok restarts the app, whatever its mode: a paste still pending (an empty hold
@@ -476,6 +494,11 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
             "audio_s": round(clip.audio_s, 3), "speech_end_s": fmt(res.speech_end_s), "ready_s": fmt(res.ready_s),
             "e2t_s": fmt(res.e2t_s), "post_stop_s": fmt(res.post_stop_s), "first_text_s": fmt(res.first_text_s),
             "error": res.error, "run_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        if hit := refusal(res.transcript, refusal_text):
+            rows[clip.clip_id].update(status="refused", error=f"the app pasted its refusal notice ({hit!r})")
+            write_rows(rows_path, rows)
+            driver.recover(restart=True)
+            raise AppRefused(f"{clip.clip_id}: the app pasted its refusal notice ({hit!r}); the run stops unscored")
         write_rows(rows_path, rows)
         rss = driver.rss_mb()
         if rss and rss > peak:  # the app's peak resident memory over the run, sampled after each clip

@@ -1,0 +1,54 @@
+{
+  "name": "openwhispr.local-cleanup",
+  "version": "1.12.0",
+  "process": "OpenWhispr",
+  "app_path": "/Applications/OpenWhispr.app",
+  "hotkey": "ralt",
+  "mode": "hold",
+  "release": {
+    "url": "https://github.com/OpenWhispr/openwhispr/releases/download/v1.12.0/OpenWhispr-1.12.0-arm64.dmg",
+    "sha256": "4a3ec44a08d6195066ce271d319cd8e43df2d37b6e3afb64b51c8f933abb3350",
+    "tag": "v1.12.0",
+    "commit": "ad74240688"
+  },
+  "language": "en",
+  "hosted_setup": false,
+  "settings_files": [],
+  "logs": "~/Library/Application Support/open-whispr/logs/debug-*.log",
+  "state": {
+    "paths": [
+      "~/Library/Application Support/open-whispr",
+      "~/.cache/openwhispr",
+      "~/Library/Caches/com.gizmolabs.openwhispr",
+      "~/Library/Logs/open-whispr"
+    ],
+    "defaults": [
+      "com.gizmolabs.openwhispr"
+    ]
+  },
+  "settings_source": {
+    "env": "~/Library/Application Support/open-whispr/.env"
+  },
+  "model": {
+    "id": "Parakeet Unified EN 0.6B, sherpa-onnx int8 (setup table's English pick) + Qwen3.5 2B Q4_K_M cleanup (bartowski GGUF@7d266954)",
+    "size_mb": 1963,
+    "backend": "sherpa-onnx; cleanup on llama.cpp",
+    "files": [
+      "~/.cache/openwhispr/parakeet-models/parakeet-unified-en-0.6b",
+      "~/.cache/openwhispr/models/Qwen_Qwen3.5-2B-Q4_K_M.gguf"
+    ],
+    "cleanup_model": "Qwen3.5 2B Q4_K_M"
+  },
+  "cleanup": "on (Qwen3.5 2B Q4_K_M, on device)",
+  "same_as": "openwhispr.shipped",
+  "settings": {
+    "LOCAL_TRANSCRIPTION_PROVIDER": "nvidia",
+    "PARAKEET_MODEL": "parakeet-unified-en-0.6b",
+    "DICTATION_LANGUAGE": "en",
+    "DICTATION_KEY": "RightOption",
+    "ACTIVATION_MODE": "push",
+    "CLEANUP_PROVIDER": "local",
+    "LOCAL_CLEANUP_MODEL": "qwen3.5-2b-q4_k_m"
+  },
+  "notes": "OpenWhispr's own on-device cleanup is part of its shipped setup on a 16 GB+ Mac: same configuration as shipped."
+}

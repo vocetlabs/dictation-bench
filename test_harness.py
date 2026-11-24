@@ -190,6 +190,28 @@ class RunTests(unittest.TestCase):
         rows = self.run_all([clip(2)], r, fp="f2")
         self.assertEqual((rows["c2"]["status"], rows["c2"]["attempts"]), ("err_ready", 3))
 
+    def test_a_pasted_refusal_notice_fails_the_clip_and_stops_the_run_unscored(self):
+        notice = "Your trial has ended. Upgrade to VoiceInk Pro at tryvoiceink.com/buy"
+        clips = [clip(1, ref=notice + " " + REF), clip(2), clip(3)]
+        r = rig()
+        with self.assertRaises(hn.AppRefused):
+            hn.run_all(clips, r[2], r[3], r[0], hn.Timing(), self.out,
+                       run={"fingerprint": "f1", "clip_ids": [c.clip_id for c in clips]},
+                       restart_after_ambiguous=False, refusal_text=["your trial has ended"], **QUIET)
+        rows = hn.load_rows(self.out / "results.csv")
+        self.assertEqual(list(rows), ["c1"])  # nothing after it was run
+        self.assertEqual((rows["c1"]["status"], rows["c1"]["attempts"]), ("refused", "1"))
+        self.assertNotIn("refused", hn.APP_OUTCOMES)  # so no score accepts the run
+        self.assertEqual(r[1].restarts, 1)
+        # Without refusal phrases (any other app) the same text is just a transcript.
+        self.out = self.out.with_name("run2")
+        rows = self.run_all(clips[:1], rig(), fp="f2")
+        self.assertEqual(rows["c1"]["status"], "ok")
+
+    def test_refusal_matches_case_insensitively(self):
+        self.assertEqual(hn.refusal("x YOUR TRIAL HAS ENDED y", ["Your trial has ended"]), "Your trial has ended")
+        self.assertEqual(hn.refusal("all fine", ["Your trial has ended"]), "")
+
     def test_any_app_is_restarted_after_an_outcome_that_isnt_ok(self):
         r = rig(latency=50.0)  # a hold app: empty, its paste still pending
         self.run_all([clip(1)], r, hn.Timing(timeout=5, quiet=1))

@@ -71,6 +71,12 @@ A profile can be the **same configuration** as another (then it is run once, und
 | Vocet 0.2.0 (notarised DMG) | shipped       | OrukQwen 1.7B Q4_K_M                           | Gemma 4 E2B Q4_K_M, on device                            | `transcription` local, Right Option, hold; usage sharing off                                                                                                | Setup's "On this Mac" choice (cleanup is part of it)                                                                                                                                                           |
 | Vocet 0.2.0                 | best-asr      | OrukQwen 1.7B Q4_K_M                           | off                                                      | as shipped, Gemma model file moved aside                                                                                                                    | Its only local speech model; 0.2.0 has no cleanup switch and cleans up only while the Gemma model is present                                                                                                   |
 | Vocet 0.2.0                 | local-cleanup | same as shipped                                | same as shipped                                          | same as shipped                                                                                                                                             | Its on-device cleanup is its shipped default                                                                                                                                                                   |
+| VoiceInk 2.27 (release DMG, trial) | shipped | Parakeet V3, Core ML (FluidAudio) | off | `hasCompletedOnboardingV2`, `CurrentTranscriptionModel` parakeet-tdt-0.6b-v3; starter Dictation mode (language auto, live transcription on, text formatting on, enhancement off); Right Option, hybrid | Onboarding's local path requires Parakeet V3; Right Option because onboarding asks for a shortcut and has none by default |
+| VoiceInk 2.27 | best-asr | Parakeet Ultra, Core ML | off | `CurrentTranscriptionModel` and the mode's model parakeet-ultra, language en | No model is marked recommended; the v2.27 registry rates Ultra 0.95 (V3 0.94) and describes it as "post-trained ... for more accurate transcription"; first listed of the models tied at 0.95 and the one described as more accurate (FluidVoice's rule) |
+| VoiceInk 2.27 | local-cleanup | Parakeet V3 (held) | VoiceInk Refine V1 (MLX, on device, its own prompt) | the mode's `isAIEnhancementEnabled` true, `selectedAIProvider` VoiceInk Refine | VoiceInk's own on-device cleanup (needs 16 GB of memory) |
+| OpenWhispr 1.12.0 | shipped | Parakeet Unified EN 0.6B, sherpa-onnx int8 | Qwen3.5 2B Q4_K_M, llama.cpp, on device | guest, local; `.env`: `PARAKEET_MODEL`, `DICTATION_LANGUAGE` en, `CLEANUP_PROVIDER` local, `LOCAL_CLEANUP_MODEL` qwen3.5-2b-q4_k_m, `DICTATION_KEY` RightOption, `ACTIVATION_MODE` push | Its local setup's English pick, with cleanup switched on by default on every Mac with 16 GB+; hold because onboarding sets push-to-talk for new users; Right Option because Globe/Fn can't be pressed by software |
+| OpenWhispr 1.12.0 | best-asr | same as shipped | off | as shipped, `CLEANUP_PROVIDER` and `LOCAL_CLEANUP_MODEL` unset | The setup table's pick for English is the maintainer's recommendation |
+| OpenWhispr 1.12.0 | local-cleanup | same as shipped | same as shipped | same as shipped | Its on-device cleanup is part of its shipped default (16 GB+) |
 
 Every run records, in `run.json`: the app version, the release (DMG) sha256, the app binary's sha256, each
 model file's sha256 (a Core ML folder: the hash of its files' hashes) and the total model size, the backend,
@@ -84,7 +90,19 @@ FluidVoice needs its Ollama provider verified once in the app); Muesli downloads
 dictation; FluidVoice downloads Whisper Large (its files then go into the profile's `model.files`); Vocet
 0.2.0 without the Gemma file pastes raw OrukQwen text and doesn't download Gemma again; the bench's Vocet
 copy may ask for Keychain access to the owner's saved key at launch (it doesn't need it for local
-dictation): check this doesn't take the focus during a run.
+dictation): check this doesn't take the focus during a run. **Verify on the host** (no VM can do it; a
+30 s smoke on the benchmark account, before the profile's first night): `voiceink.local-cleanup` (Refine
+needs 16 GB; the VMs have 8 GB) and `openwhispr.shipped` (its Qwen3.5 2B cleanup takes over 60 s on a VM's
+paravirtual GPU). `voiceink.shipped`, `voiceink.best-asr` and `openwhispr.best-asr` pass the smoke and
+10 clips in the bench VM (`dictation-vm-benchapps`, README); VoiceInk best-asr was probed there with
+Parakeet Ultra (10 of 10 clips ok; 10 clips decide nothing about accuracy, the pick follows the registry).
+
+**VoiceInk's trial.** The official release runs a 7-day trial that starts at its first launch (the start
+date goes into the login Keychain, which the bench never writes). After it, every paste starts with "Your
+trial has ended. Upgrade to VoiceInk Pro..." The harness stops any run whose paste holds that notice
+(`refusal_text`): the clip is recorded as `refused`, which no score accepts. All smoke tests and pre-night
+checks happen in the VM; on a host, VoiceInk is first launched on its first night (in the benchmark
+account), so its three nights fall inside the trial.
 
 ## The owner's Mac (host runs)
 
@@ -107,8 +125,8 @@ TextEdit documents:
 - `./bench setup` outside CI refuses to overwrite an app's existing settings unless `--overwrite` (a test
   machine or VM).
 
-Not yet covered here: VoiceInk (the official release DMG, within its trial) and OpenWhispr (guest, local);
-Hex and OpenSuperWhisper; Buzz and Vibe are out of scope (file transcription, not dictation).
+Not yet covered here: Hex and OpenSuperWhisper (setups still to write). Buzz and Vibe are out of scope
+(file transcription, not dictation).
 
 ## Passes (predeclared; no adaptive extra passes)
 
@@ -120,9 +138,16 @@ its own: 1 pass. Budget: 6 passes per night (about 72 min each).
 | 1     | pass 1 of handy, muesli, fluidvoice, vocet (shipped); handy.best-asr, fluidvoice.best-asr |
 | 2     | pass 2 of the four shipped (order rotated); handy.local-cleanup, muesli.local-cleanup     |
 | 3     | pass 3 of the four shipped (order rotated); fluidvoice.local-cleanup, vocet.best-asr      |
+| 4     | pass 1 of voiceink, openwhispr (shipped); voiceink.best-asr, openwhispr.best-asr, voiceink.local-cleanup |
+| 5     | pass 2 of voiceink, openwhispr (shipped, order rotated)                                   |
+| 6     | pass 3 of voiceink, openwhispr (shipped, order rotated)                                   |
 
 For example, night 1: `./bench host-run --jobs handy:shipped,muesli:shipped,fluidvoice:shipped,vocet:shipped,handy:best-asr,fluidvoice:best-asr --passes 1 --first-pass 1`
 (night 2 and 3: `--first-pass 2` and `3`, which also rotate the order and change the shared clip order).
+Nights 4 to 6 are consecutive, so VoiceInk's three nights fall inside its 7-day trial from its first launch
+on night 4: `./bench host-run --jobs voiceink:shipped,openwhispr:shipped,voiceink:best-asr,openwhispr:best-asr,voiceink:local-cleanup --passes 1 --first-pass 1`,
+then `--jobs voiceink:shipped,openwhispr:shipped` with `--first-pass 2` and `3`. `openwhispr.local-cleanup`
+is the same configuration as shipped and isn't run on its own.
 
 ## Changes
 
@@ -130,3 +155,8 @@ For example, night 1: `./bench host-run --jobs handy:shipped,muesli:shipped,flui
   from its published notarised 0.2.0 DMG instead of a source build, like every other app. One protocol for
   CI and the Mac: the CI-only 60 s deadline and 3 s settle are removed. Earlier results (before this date)
   used the old protocol and a source build of Vocet and are not comparable.
+- 2026-11-23 (BENCH2): VoiceInk 2.27 (release DMG, trial) and OpenWhispr 1.12.0 added. Against BENCH1's
+  configs: OpenWhispr activation hold (its onboarding now defaults new users to push-to-talk; was tap), its
+  shipped profile includes its default 16 GB+ local cleanup; VoiceInk's models go where FluidAudio at its
+  pinned commit looks (`Models/parakeet-tdt-0.6b-v3`, `Models/silero-vad`), and its mode has live
+  transcription on as onboarding writes it.
