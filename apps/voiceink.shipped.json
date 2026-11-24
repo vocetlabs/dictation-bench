@@ -5,24 +5,57 @@
   "app_path": "/Applications/VoiceInk.app",
   "hotkey": "ralt",
   "mode": "hold",
+  "hybrid": true,
   "release": {
     "url": "https://github.com/Beingpax/VoiceInk/releases/download/v2.27/VoiceInk.dmg",
     "sha256": "a832f6c3a1655f2e51df112efa45e24fa158601d5abe8689fe48fc6904c771c6",
     "tag": "v2.27",
     "commit": "b5d1be9a7c"
   },
-  "model": {
-    "id": "Parakeet TDT 0.6B v3, Core ML (onboarding's required model)",
-    "size_mb": 450,
-    "backend": "FluidAudio Core ML"
-  },
-  "language": "en",
-  "cleanup": "off",
-  "notes": "Onboarding asks for a shortcut: Right Option; recording mode left at its default (hybrid). Unattended setup reaches recording on a runner, but VoiceInk ends each recording at once (\"captured less than 150 ms\"); local only until that is understood.",
   "hosted_setup": false,
   "settings_files": [
     "~/Library/Preferences/com.prakashjoshipax.VoiceInk.plist"
   ],
   "logs": "unified:VoiceInk:com.prakashjoshipax",
-  "hybrid": true
+  "state": {
+    "paths": [
+      "~/Library/Application Support/com.prakashjoshipax.VoiceInk",
+      "~/Library/Application Support/VoiceInk",
+      "~/Library/Application Support/FluidAudio",
+      "~/Library/Caches/com.prakashjoshipax.VoiceInk",
+      "~/Library/HTTPStorages/com.prakashjoshipax.VoiceInk"
+    ],
+    "defaults": [
+      "com.prakashjoshipax.VoiceInk"
+    ]
+  },
+  "settings_source": {
+    "defaults": "com.prakashjoshipax.VoiceInk"
+  },
+  "refusal_text": [
+    "Your trial has ended",
+    "Upgrade to VoiceInk Pro",
+    "tryvoiceink.com/buy"
+  ],
+  "model": {
+    "id": "Parakeet V3 (parakeet-tdt-0.6b-v3), Core ML, FluidInference/parakeet-tdt-0.6b-v3-coreml@7dd20fe6",
+    "size_mb": 469,
+    "backend": "FluidAudio Core ML, live transcription on",
+    "files": [
+      "~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3",
+      "~/Library/Application Support/FluidAudio/Models/silero-vad"
+    ]
+  },
+  "language": "auto",
+  "cleanup": "off",
+  "settings": {
+    "hasCompletedOnboardingV2": true,
+    "CurrentTranscriptionModel": "parakeet-tdt-0.6b-v3",
+    "activeConfigurationId": "10000000-0000-0000-0000-000000000001",
+    "modeConfigurationsV2/0/selectedTranscriptionModelName": "parakeet-tdt-0.6b-v3",
+    "modeConfigurationsV2/0/selectedLanguage": "auto",
+    "modeConfigurationsV2/0/isAIEnhancementEnabled": false,
+    "modeConfigurationsV2/0/isRealtimeTranscriptionEnabled": true
+  },
+  "notes": "Maintainer's release in its 7-day trial: it starts at the first launch (the date goes into the login Keychain, which the bench never writes); after it every paste starts with an upgrade notice, which stops the run (refusal_text). Validate in a VM; on a host, launch it only in the account and on the night of its runs. Onboarding's local path: starter Dictation mode (text formatting on, live transcription on); shortcut Right Option (onboarding asks, no default), recording mode hybrid (default). shipped: as onboarding leaves it (its required model, language auto)."
 }

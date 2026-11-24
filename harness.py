@@ -147,6 +147,8 @@ class App:
     settings_source: dict = field(default_factory=dict)  # {file[, key]} or {defaults}: where the app keeps
                                                   #   `settings`, read back before a run is scored
     absent_files: list = field(default_factory=list)  # files the profile requires to be missing (checked)
+    refusal_text: list = field(default_factory=list)  # text that means the app refused to dictate (VoiceInk's
+                                                  #   trial-ended notice): the clip fails unscored, the run stops
 
     @property
     def base(self) -> str:
@@ -246,9 +248,21 @@ def accuracy_only() -> Timing:
     return Timing(timed=False)
 
 
+class AppRefused(Exception):
+    """The app pasted its own refusal (a licence or trial notice) instead of, or around, the dictation: the
+    run can't be scored under the app's label, so it stops."""
+
+
+def refusal(text: str, phrases) -> str:
+    """The first of the app's refusal phrases the text contains (case-insensitive), or ""."""
+    low = text.lower()
+    return next((p for p in phrases if p.lower() in low), "")
+
+
 class InfraError(Exception):
-    def __init__(self, status: str, msg: str) -> None:
+    def __init__(self, status: str, msg: str, seen: str = "") -> None:
         assert status in INFRA_ERRORS
+        self.seen = seen
         super().__init__(msg)
         self.status = status
 
@@ -310,6 +324,7 @@ class Result:
     post_stop_s: float | None = None
     first_text_s: float | None = None
     error: str = ""
+    seen: str = ""  # every text the document showed during the attempt, quiet period included (refusal check only)
 
 
 def _r(x: float | None) -> float | None:
@@ -336,12 +351,14 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
     clock.sleep(timing.start_delay)
 
     text, first, last = "", None, None
+    snapshots: list[str] = []  # every distinct text the document showed, in order (the refusal check reads all)
 
     def poll() -> None:
         nonlocal text, first, last
         cur = target.read()
         if cur != text:
             text, last = cur, clock.now()
+            snapshots.append(cur)
             if first is None and cur.strip():
                 first = last
 
@@ -360,7 +377,7 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
         clock.sleep(timing.poll)
     t_stop = driver.release()
     if not target.verify():
-        raise InfraError("err_target", "the document lost the front while dictating")
+        raise InfraError("err_target", "the document lost the front while dictating", seen="\n".join(snapshots))
     status = "empty"
     deadline = t_stop + timing.timeout
     while True:
@@ -371,10 +388,13 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
             break
         cur = target.read()
         if clock.now() > deadline:
+            if cur != text:  # not scored, but the refusal check still sees it (a notice in it refuses the clip)
+                snapshots.append(cur)
             status = "partial" if text.strip() else "empty"
             break
         if cur != text:
             text, last = cur, clock.now()
+            snapshots.append(cur)
             if first is None and cur.strip():
                 first = last
         if text.strip() and clock.now() - last >= timing.settle:
@@ -382,10 +402,10 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
             break
         clock.sleep(timing.poll)
     if not target.verify():
-        raise InfraError("err_target", "the document lost the front while waiting for text")
+        raise InfraError("err_target", "the document lost the front while waiting for text", seen="\n".join(snapshots))
     if status in ("ok", "partial") and last < end_of_speech:
         raise InfraError("err_stale", f"the text last changed {end_of_speech - last:.2f} s before the clip's speech "
-                                      "ended (negative e2t): not this clip's dictation")
+                                      "ended (negative e2t): not this clip's dictation", seen="\n".join(snapshots))
     res = Result(status, text.strip(), ready_s=_r(ready), speech_end_s=_r(clip.speech_end_s))
     if status in ("ok", "partial"):
         res.e2t_s, res.post_stop_s = _r(last - end_of_speech), _r(last - t_stop)
@@ -403,6 +423,7 @@ def run_clip(clip: Clip, driver: Driver, target: Target, clock: Clock, timing: T
             res.error = "text still changing at the deadline" + (" and after it" if text != before else "")
         else:
             res.error = f"no text within {timing.timeout:g} s of the release"
+    res.seen = "\n".join(snapshots)
     return res
 
 
@@ -442,10 +463,13 @@ def fmt(v) -> str:
 
 
 def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, timing: Timing, out: pathlib.Path,
-            *, run: dict, restart_after_ambiguous: bool, attempts: int = 3, log=None) -> dict[str, dict]:
+            *, run: dict, restart_after_ambiguous: bool, attempts: int = 3, log=None,
+            refusal_text=()) -> dict[str, dict]:
     """Runs the clips into out/results.csv, with out/run.json describing the run (`run`, which must carry
     a "fingerprint"). A rerun resumes only with the same fingerprint, and keeps only rows of these clips.
-    App outcomes are final; infrastructure faults are retried. Returns the rows by clip_id."""
+    App outcomes are final; infrastructure faults are retried. A paste holding one of `refusal_text` (the app's
+    licence or trial notice) records the clip as `refused`, which no score accepts, and raises AppRefused.
+    Returns the rows by clip_id."""
     log = log or flushed  # one line per clip, visible at once in a CI log (stdout is a pipe there)
     out.mkdir(parents=True, exist_ok=True)
     meta_path, rows_path = out / "run.json", out / "results.csv"
@@ -467,7 +491,9 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
             try:
                 res = run_clip(clip, driver, target, clock, timing)
             except InfraError as e:
-                res = Result(e.status, error=str(e))
+                res = Result(e.status, error=str(e), seen=e.seen)
+            if refusal(res.seen + " " + res.transcript, refusal_text):
+                break
             if res.status == "ok":
                 break
             # Any outcome but ok restarts the app, whatever its mode: a paste still pending (an empty hold
@@ -481,6 +507,11 @@ def run_all(clips: list[Clip], driver: Driver, target: Target, clock: Clock, tim
             "audio_s": round(clip.audio_s, 3), "speech_end_s": fmt(res.speech_end_s), "ready_s": fmt(res.ready_s),
             "e2t_s": fmt(res.e2t_s), "post_stop_s": fmt(res.post_stop_s), "first_text_s": fmt(res.first_text_s),
             "error": res.error, "run_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        if hit := refusal(res.seen + " " + res.transcript, refusal_text):
+            rows[clip.clip_id].update(status="refused", error=f"the app pasted its refusal notice ({hit!r})")
+            write_rows(rows_path, rows)
+            driver.recover(restart=True)
+            raise AppRefused(f"{clip.clip_id}: the app pasted its refusal notice ({hit!r}); the run stops unscored")
         write_rows(rows_path, rows)
         rss = driver.rss_mb()
         if rss and rss > peak:  # the app's peak resident memory over the run, sampled after each clip

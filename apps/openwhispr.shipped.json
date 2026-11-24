@@ -4,22 +4,51 @@
   "process": "OpenWhispr",
   "app_path": "/Applications/OpenWhispr.app",
   "hotkey": "ralt",
-  "mode": "toggle",
+  "mode": "hold",
   "release": {
     "url": "https://github.com/OpenWhispr/openwhispr/releases/download/v1.12.0/OpenWhispr-1.12.0-arm64.dmg",
     "sha256": "4a3ec44a08d6195066ce271d319cd8e43df2d37b6e3afb64b51c8f933abb3350",
     "tag": "v1.12.0",
     "commit": "ad74240688"
   },
-  "model": {
-    "id": "Parakeet Unified EN 0.6B, sherpa-onnx int8 (its setup table's pick for English)",
-    "size_mb": 631,
-    "backend": "sherpa-onnx"
-  },
   "language": "en",
-  "cleanup": "off",
-  "notes": "Activation tap (default). Unattended setup installs the model and writes the settings onboarding would (through its DevTools protocol), but on a runner neither its Globe/Fn default (which software can't press) nor Right Option starts a recording, and it keeps no log without its own debug setting: local only for now.",
   "hosted_setup": false,
   "settings_files": [],
-  "logs": "~/Library/Application Support/*[Ww]hisper*/logs/debug-*.log"
+  "logs": "~/Library/Application Support/open-whispr/logs/debug-*.log",
+  "state": {
+    "paths": [
+      "~/Library/Application Support/open-whispr",
+      "~/.cache/openwhispr",
+      "~/Library/Caches/com.gizmolabs.openwhispr",
+      "~/Library/Logs/open-whispr"
+    ],
+    "defaults": [
+      "com.gizmolabs.openwhispr"
+    ]
+  },
+  "settings_source": {
+    "env": "~/Library/Application Support/open-whispr/.env"
+  },
+  "model": {
+    "id": "Parakeet Unified EN 0.6B, sherpa-onnx int8 (setup table's English pick) + Qwen3.5 2B Q4_K_M cleanup (bartowski GGUF@7d266954)",
+    "size_mb": 1963,
+    "backend": "sherpa-onnx; cleanup on llama.cpp",
+    "files": [
+      "~/.cache/openwhispr/parakeet-models/parakeet-unified-en-0.6b",
+      "~/.cache/openwhispr/models/Qwen_Qwen3.5-2B-Q4_K_M.gguf"
+    ],
+    "cleanup_model": "Qwen3.5 2B Q4_K_M"
+  },
+  "cleanup": "on (Qwen3.5 2B Q4_K_M, on device, onboarding's default on a 16 GB+ Mac)",
+  "settings": {
+    "LOCAL_TRANSCRIPTION_PROVIDER": "nvidia",
+    "PARAKEET_MODEL": "parakeet-unified-en-0.6b",
+    "DICTATION_LANGUAGE": "en",
+    "DICTATION_KEY": "RightOption",
+    "ACTIVATION_MODE": "push",
+    "CLEANUP_PROVIDER": "local",
+    "LOCAL_CLEANUP_MODEL": "qwen3.5-2b-q4_k_m"
+  },
+  "verify": "verify-on-host: in an 8 GB VM its cleanup takes over 60 s (paravirtual GPU), so the 30 s smoke needs the host's Metal GPU, on the benchmark account before its night",
+  "notes": "Guest, on this device, English. Activation hold (onboarding sets push-to-talk for new users; was tap in BENCH1). Key Right Option: its Globe/Fn default can't be pressed by software. shipped: onboarding's local setup turns cleanup on on every Mac with 16 GB+ (off and unavailable under 16 GB). VM check 2026-11-23: transcription and paste work; cleanup late (12/12 words right) under a 60 s deadline."
 }

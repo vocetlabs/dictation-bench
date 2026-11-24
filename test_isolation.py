@@ -271,6 +271,32 @@ class GateTests(unittest.TestCase):
         prefs["EnableAIProcessing"] = "0"
         self.assertIn("EnableAIProcessing", bench.settings_problems(b, read_pref=lambda k, dom: prefs.get(k))[1][0])
 
+    def test_settings_inside_json_preference_data_and_env_files_are_read_back(self):
+        import plistlib
+        mode = [{"selectedLanguage": "en", "isAIEnhancementEnabled": False}]
+        plist = plistlib.dumps({"modeConfigurationsV2": json.dumps(mode).encode(), "Current": "parakeet"})
+        a = app(settings={"Current": "parakeet", "modeConfigurationsV2/0/selectedLanguage": "en",
+                          "modeConfigurationsV2/0/isAIEnhancementEnabled": False},
+                settings_source={"defaults": "com.x"})
+        prefs = {"Current": "parakeet"}
+        got, problems = bench.settings_problems(a, read_pref=lambda k, dom: prefs.get(k), export=lambda dom: plist)
+        self.assertEqual(problems, [])
+        self.assertIs(got["modeConfigurationsV2/0/isAIEnhancementEnabled"], False)
+        a.settings["modeConfigurationsV2/0/selectedLanguage"] = "auto"
+        self.assertIn("selectedLanguage", bench.settings_problems(a, read_pref=lambda k, dom: prefs.get(k),
+                                                                  export=lambda dom: plist)[1][0])
+        self.assertIsNone(bench.json_in_pref("modeConfigurationsV2/5/x", "com.x", export=lambda dom: plist))
+        self.assertIsNone(bench.json_in_pref("missing/0", "com.x", export=lambda dom: None))
+        with tempfile.TemporaryDirectory() as d:
+            env = pathlib.Path(d) / ".env"
+            env.write_text("# OpenWhispr\nDICTATION_KEY=RightOption\nOPENAI_API_KEY=not-read\n")
+            b = app(settings={"DICTATION_KEY": "RightOption", "CLEANUP_PROVIDER": None},
+                    settings_source={"env": str(env)})
+            got, problems = bench.settings_problems(b)
+            self.assertEqual((got, problems), ({"DICTATION_KEY": "RightOption", "CLEANUP_PROVIDER": None}, []))
+            env.write_text("DICTATION_KEY=GLOBE\nCLEANUP_PROVIDER=local\n")
+            self.assertEqual(len(bench.settings_problems(b)[1]), 2)
+
     def test_unverified_profiles_and_wrong_settings_are_refused_before_anything_runs(self):
         with self.assertRaisesRegex(SystemExit, "isn't verified"):
             bench.run_job(app(verify="check it in a VM"))
