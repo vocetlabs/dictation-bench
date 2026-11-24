@@ -95,7 +95,7 @@ there too (10 clips decide nothing about accuracy; VoiceInk's pick follows its r
 **Verify on the host** (each profile's `verify` field, which blocks scored runs until cleared; no VM can
 do these, so a 30 s smoke in the bench account before the profile's first night): `voiceink.local-cleanup`
 (Refine needs 16 GB; the VMs have 8 GB), `openwhispr.shipped` (its Qwen3.5 2B cleanup takes over 60 s on a
-VM's paravirtual GPU), `fluidvoice.best-asr` (Whisper Large needs 8 GB of free memory; the 8 GB VM refuses it, so a 16 GB Mac; its
+VM's paravirtual GPU; cleared 2026-11-24: host smoke ok, 12/12 words, e2t 6.3 s), `fluidvoice.best-asr` (Whisper Large needs 8 GB of free memory; the 8 GB VM refuses it, so a 16 GB Mac; its
 gguf then goes into `model.files`) and `fluidvoice.local-cleanup` (the preseeded Ollama provider isn't
 honoured: select and verify it once in FluidVoice's AI settings, then check the text is cleaned). A model an
 app downloads itself (Muesli's Cleanup Lite, FluidVoice's Whisper Large) is loaded only after a restart:
@@ -179,3 +179,5 @@ is the same configuration as shipped and isn't run on its own.
 - 2026-11-23 (BENCH2 review): harness version 4. The refusal check reads every snapshot, including a read
   that crosses the deadline (it isn't scored, but a notice in it refuses the clip); runs and `partial` rows
   from earlier versions don't resume or pool.
+- 2026-11-24: `openwhispr.shipped` verified on the host (owner's Mac, `vocetbench` account; smoke ok,
+  12/12 words, e2t 6.3 s); its `verify` field is cleared. No configuration change.
