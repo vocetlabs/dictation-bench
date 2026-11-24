@@ -149,6 +149,20 @@ def setup(name: str, ci: bool, overwrite: bool = False, isolated: bool = False) 
     subprocess.run(["bash", str(script)], check=True, env=env)
 
 
+def wait_for_settings(app: hn.App, timeout: float = 90, read_pref=None, export=None,
+                      sleep=None, clock=None) -> list[str]:
+    """Waits until the app holds every setting its profile pins (an app that writes its settings file some
+    time after launch, e.g. OpenWhispr's userData/.env); the problems still left after `timeout` seconds."""
+    import time
+    sleep, clock = sleep or time.sleep, clock or time.monotonic
+    end = clock() + timeout
+    while True:
+        _, problems = settings_problems(app, read_pref, export)
+        if not problems or clock() >= end:
+            return problems
+        sleep(2)
+
+
 def in_vm() -> bool:
     """This Mac is a virtual machine (the hypervisor flag macOS sets for its guests)."""
     r = subprocess.run(["sysctl", "-n", "kern.hv_vmm_present"], capture_output=True, text=True)
@@ -721,6 +735,9 @@ def main(argv: list[str] | None = None) -> int:
     jc.add_argument("--sample", type=positive_int, default=40)
     jc.add_argument("--seed", type=int, default=7)
     jc.add_argument("--model", default=None, help="the second judge (default: judge.SECOND_JUDGE_MODEL)")
+    sw = sub.add_parser("settings-wait", help="setup scripts: wait until the app holds its profile's settings")
+    sw.add_argument("--app", required=True)
+    sw.add_argument("--timeout", type=positive_int, default=90, help="seconds")
     sub.add_parser("windows", help="on-screen windows (owner and title), to debug a setup")
     d = sub.add_parser("dry-run")
     d.add_argument("-n", type=int, default=5)
@@ -757,6 +774,14 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "judge-check":
         import judge as jd
         return judge_check(a.runs, a.sample, a.seed, a.model or jd.SECOND_JUDGE_MODEL)
+    if a.cmd == "settings-wait":
+        app = app_config(a.app)
+        problems = wait_for_settings(app, a.timeout)
+        if problems:
+            print(f"setup: {app.name} doesn't hold its profile's settings after {a.timeout} s: "
+                  + "; ".join(problems), file=sys.stderr)
+            return 1
+        return 0
     if a.cmd == "windows":
         import Quartz
         for w in Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID):

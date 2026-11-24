@@ -201,6 +201,16 @@ class LockTests(unittest.TestCase):
             with iso.host_lock(lock):  # released
                 pass
 
+    def test_a_missing_domain_is_already_clear_in_either_wording(self):
+        for stderr in ("Domain (com.prakashjoshipax.VoiceInk) not found.\nDefaults have not been changed.",
+                       "Domain com.prakashjoshipax.VoiceInk does not exist"):
+            run = lambda cmd, e=stderr: SimpleNamespace(returncode=1, stderr=e)  # noqa: E731
+            iso.clear_state([], ["com.prakashjoshipax.VoiceInk"], run=run)
+        failed = lambda cmd: SimpleNamespace(returncode=1, stderr="cfprefsd not responding")  # noqa: E731
+        with self.assertRaisesRegex(SystemExit, "couldn't clear the com.x preferences"):
+            iso.clear_state([], ["com.x"], run=failed)
+
+
 class PrefTests(unittest.TestCase):
     def test_absent_only_when_defaults_says_so(self):
         absent = lambda cmd: SimpleNamespace(returncode=1, stdout="", stderr="The domain/default pair of (x, y) does not exist")  # noqa: E731
@@ -270,6 +280,27 @@ class GateTests(unittest.TestCase):
         self.assertEqual(bench.settings_problems(b, read_pref=lambda k, dom: prefs.get(k))[1], [])
         prefs["EnableAIProcessing"] = "0"
         self.assertIn("EnableAIProcessing", bench.settings_problems(b, read_pref=lambda k, dom: prefs.get(k))[1][0])
+
+    def test_setup_waits_until_the_app_writes_its_profiles_env_keys(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = pathlib.Path(d) / ".env"
+            env.write_text("DICTATION_KEY=RightOption\nACTIVATION_MODE=push\n")
+            a = app(settings={"DICTATION_KEY": "RightOption", "PARAKEET_MODEL": "p", "CLEANUP_PROVIDER": None},
+                    settings_source={"env": str(env)})
+            now, naps = [0.0], []
+
+            def sleep(s):  # the app writes its keys after the second check
+                naps.append(s)
+                now[0] += s
+                if len(naps) == 2:
+                    env.write_text(env.read_text() + "PARAKEET_MODEL=p\n")
+            self.assertEqual(bench.wait_for_settings(a, 90, sleep=sleep, clock=lambda: now[0]), [])
+            self.assertEqual(len(naps), 2)
+            env.write_text(env.read_text() + "CLEANUP_PROVIDER=local\n")  # never matches: gives up at 90 s
+            now[0], naps[:] = 0.0, []
+            left = bench.wait_for_settings(a, 90, sleep=sleep, clock=lambda: now[0])
+            self.assertIn("CLEANUP_PROVIDER", left[0])
+            self.assertGreaterEqual(now[0], 90)
 
     def test_settings_inside_json_preference_data_and_env_files_are_read_back(self):
         import plistlib
