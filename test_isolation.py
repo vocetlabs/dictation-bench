@@ -462,6 +462,53 @@ class GrantTests(unittest.TestCase):
             self.setup_env(vm=False, env_ci="1")
 
 
+class VmFindingsTests(unittest.TestCase):
+    def test_a_dict_setting_is_checked_on_the_keys_the_profile_pins(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = pathlib.Path(d) / "settings_store.json"
+            launched = {"anthropic": "", "openai": "", "custom": "gemma3:4b", "groq": ""}  # Handy fills these in
+            f.write_text(json.dumps({"settings": {"post_process_models": launched, "post_process_enabled": True}}))
+            a = app(settings={"post_process_models": {"custom": "gemma3:4b"}, "post_process_enabled": True},
+                    settings_source={"file": str(f), "key": "settings"})
+            self.assertEqual(bench.settings_problems(a)[1], [])
+            launched["custom"] = "qwen3:4b"
+            f.write_text(json.dumps({"settings": {"post_process_models": launched, "post_process_enabled": True}}))
+            self.assertIn("post_process_models", bench.settings_problems(a)[1][0])
+            a.settings["post_process_enabled"] = False  # everything else stays strict
+            self.assertEqual(len(bench.settings_problems(a)[1]), 2)
+
+    def test_verified_profiles_are_cleared_and_fluidvoice_waits_for_the_host(self):
+        for n in ("handy:best-asr", "handy:local-cleanup", "muesli:local-cleanup", "vocet:best-asr"):
+            self.assertEqual(bench.app_config(n).verify, "", n)
+        self.assertIn("8 GB of free memory", bench.app_config("fluidvoice:best-asr").verify)
+        self.assertIn("Ollama provider", bench.app_config("fluidvoice:local-cleanup").verify)
+
+    def test_setup_restarts_the_app_after_its_in_app_download(self):
+        import subprocess
+        for name, sh in (("Muesli.app", "muesli.sh"), ("FluidVoice.app", "fluidvoice.sh")):
+            self.assertIn(f"restart_after_download {name}", (HERE / "apps" / sh).read_text())
+        with tempfile.TemporaryDirectory() as d:
+            model = pathlib.Path(d) / "model.bin"
+            stubs = (f'start() {{ echo "STARTED $1"; }}; pkill() {{ echo QUIT; }}; pgrep() {{ return 1; }}; '
+                     f'sleep() {{ head -c 5 /dev/zero > "{model}"; }}; ')
+            script = (HERE / "apps" / "common.sh").read_text()
+            helper = script[script.index("restart_after_download() {"):].split("\n}\n")[0] + "\n}\n"
+            run = lambda: subprocess.run(  # noqa: E731
+                ["bash", "-c", "log() { :; }; APPS=/bench/work/Applications\n" + helper + stubs +
+                 f'restart_after_download Muesli.app Muesli "{model}" 5 cleanup'], capture_output=True, text=True,
+                env={"PATH": "/usr/bin:/bin", "BENCH_DOWNLOAD_WAIT": "30"})
+            out = run()  # downloaded while setup waits: quit and started again
+            self.assertEqual((out.returncode, out.stdout.split()), (0, ["QUIT", "STARTED", "Muesli.app"]), out.stderr)
+            out = run()  # already there at launch: nothing to restart
+            self.assertEqual((out.returncode, out.stdout), (0, ""))
+            model.unlink()
+            stubs = stubs.replace(f'head -c 5 /dev/zero > "{model}"', ":")
+            out = subprocess.run(["bash", "-c", "log() { :; }; APPS=/b\n" + helper + stubs +
+                                  f'restart_after_download Muesli.app Muesli "{model}" 5 cleanup'],
+                                 capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "BENCH_DOWNLOAD_WAIT": "20"})
+            self.assertEqual((out.returncode, out.stdout), (1, ""))  # never downloaded: setup fails, no restart
+
+
 class LogTests(unittest.TestCase):
     def test_a_failed_smoke_prints_counts_never_lines(self):
         with tempfile.TemporaryDirectory() as d:

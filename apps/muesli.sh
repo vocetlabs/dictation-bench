@@ -17,8 +17,11 @@ mkdir -p "$HOME/Library/Application Support/Muesli"
 if [ "$PROFILE" = local-cleanup ]; then
   printf '{"has_completed_onboarding": true, "enable_post_processor": true, "post_processor_backend": "local", "active_post_processor_id": "qwen35-postproc-v4"}\n' \
     >"$HOME/Library/Application Support/Muesli/config.json"
-  log "local-cleanup: let Muesli download Cleanup Lite (Settings), then check one dictation is cleaned"
 else
   printf '{"has_completed_onboarding": true}\n' >"$HOME/Library/Application Support/Muesli/config.json"
 fi
 start Muesli.app Muesli
+if [ "$PROFILE" = local-cleanup ]; then  # Cleanup Lite v14 (docs/models/cleanup-models.json at v0.8.6)
+  restart_after_download Muesli.app Muesli "$HOME/.cache/muesli/models/postproc-qwen35-postproc-v4/model.safetensors" \
+    799973748 "local-cleanup: Cleanup Lite (Models > Cleanup > Cleanup Lite > Download, ~790 MB)"
+fi

@@ -41,7 +41,6 @@
     },
     "post_process_selected_prompt_id": "default_improve_transcriptions"
   },
-  "verify": "Ollama with gemma3:4b answers at localhost:11434; Handy pastes the post-processed text on Option+Shift+Space. The pinned Ollama digest is gemma3:4b's manifest digest from registry.ollama.ai (2026-11-23): check `ollama list` shows ID 68ceab7e468a.",
   "state": {
     "paths": [
       "~/Library/Application Support/com.pais.handy",

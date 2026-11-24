@@ -37,7 +37,7 @@
     "SelectedProviderID": "ollama",
     "SelectedAIModel": "gemma3:4b"
   },
-  "verify": "FluidVoice needs the Ollama provider verified in its settings (it stores a fingerprint), so the setup can't preseed it: verify it once in the app. The pinned Ollama digest is gemma3:4b's manifest digest from registry.ollama.ai (2026-11-23): check `ollama list` shows ID 68ceab7e468a.",
+  "verify": "Verify on the host: the preseeded Ollama provider isn't honoured (the VM pasted raw text and Ollama got no requests); select and verify the Ollama provider once in FluidVoice's AI settings, then check a dictation is cleaned and Ollama's request count rises. gemma3:4b's digest (ID 68ceab7e468a) is verified.",
   "state": {
     "paths": [
       "~/Library/Application Support/FluidAudio",

@@ -77,6 +77,23 @@ start() {
   log "$2 didn't start"; return 1
 }
 
+# restart_after_download <App.app> <process> <file> <bytes> <what>: a model the app downloads itself (a
+# person starts it in the app) is only loaded after a restart. If <file> is missing, wait (up to
+# BENCH_DOWNLOAD_WAIT seconds, default 3600) until it has its full size, then quit the bench's copy by its
+# bundle path and start it again. Nothing to do when the file was already there at launch.
+restart_after_download() {
+  local app=$1 proc=$2 file=$3 bytes=$4 what=$5 waited=0 limit=${BENCH_DOWNLOAD_WAIT:-3600}
+  [ -f "$file" ] && [ "$(stat -f %z "$file")" = "$bytes" ] && return 0
+  log "$what: download it in $proc now; setup waits up to ${limit}s, then restarts $proc to load it"
+  until [ -f "$file" ] && [ "$(stat -f %z "$file")" = "$bytes" ]; do
+    [ "$waited" -lt "$limit" ] || { log "$what: not downloaded within ${limit}s"; return 1; }
+    sleep 10; waited=$((waited + 10))
+  done
+  pkill -TERM -U "$(id -u)" -f "^$APPS/$app/Contents/MacOS/" || true
+  for _ in $(seq 1 50); do pgrep -U "$(id -u)" -f "^$APPS/$app/Contents/MacOS/" >/dev/null || break; sleep 0.2; done
+  start "$app" "$proc"
+}
+
 # ollama_model <name>: the pinned Ollama model for a local-cleanup profile, pulled if missing (Ollama must be
 # installed and serving on localhost:11434). Its digest goes into the setup log.
 ollama_model() {

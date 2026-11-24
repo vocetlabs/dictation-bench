@@ -29,7 +29,7 @@
     "SelectedSpeechModel": "whisper-large",
     "EnableAIProcessing": false
   },
-  "verify": "FluidVoice downloads Whisper Large itself: choose it in Settings > Voice Engine, check the language (English or auto), then add its model files to model.files.",
+  "verify": "Verify on the host (16 GB): FluidVoice needs 8 GB of free memory to load Whisper Large (the 8 GB VM refuses and deletes it). Download it in Settings > Voice Engine (setup waits and restarts FluidVoice), check the language (English or auto), then add ~/Library/Caches/WhisperModels/whisper-large-v3-Q8_0.gguf (1668741440 bytes, sha256 2fa1a5f179f8a511a53e2108db270aa4af3ce08cd976af4180e2854666bb4ba3) to model.files.",
   "state": {
     "paths": [
       "~/Library/Application Support/FluidAudio",

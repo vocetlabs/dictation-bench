@@ -35,7 +35,6 @@
     "post_processor_backend": "local",
     "active_post_processor_id": "qwen35-postproc-v4"
   },
-  "verify": "Muesli downloads Cleanup Lite (v14) itself when cleanup is turned on: download it in Settings, then check a dictation is cleaned.",
   "state": {
     "paths": [
       "~/Library/Application Support/Muesli",
