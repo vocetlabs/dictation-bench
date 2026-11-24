@@ -179,3 +179,5 @@ is the same configuration as shipped and isn't run on its own.
 - 2026-11-23 (BENCH2 review): harness version 4. The refusal check reads every snapshot, including a read
   that crosses the deadline (it isn't scored, but a notice in it refuses the clip); runs and `partial` rows
   from earlier versions don't resume or pool.
+- 2026-11-24: `openwhispr.shipped` verified on the host (owner's Mac, `vocetbench` account; smoke ok,
+  12/12 words, e2t 6.3 s); its `verify` field is cleared. No configuration change.
