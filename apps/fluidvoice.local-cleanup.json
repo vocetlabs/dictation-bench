@@ -1,0 +1,54 @@
+{
+  "name": "fluidvoice.local-cleanup",
+  "version": "1.6.13",
+  "process": "FluidVoice",
+  "app_path": "/Applications/FluidVoice.app",
+  "hotkey": "ralt",
+  "mode": "toggle",
+  "release": {
+    "url": "https://github.com/altic-dev/FluidVoice/releases/download/v1.6.13/Fluid-oss-1.6.13.dmg",
+    "sha256": "8da47aba78de572973c287ab5e33d9eefc4b8938f69bbff99249e28900ce49aa",
+    "tag": "v1.6.13",
+    "commit": "9912eca0d9"
+  },
+  "model": {
+    "id": "Parakeet TDT v3, Core ML (\"FluidVoice Pick\", the Apple-silicon default)",
+    "size_mb": 461,
+    "backend": "FluidAudio Core ML",
+    "files": [
+      "~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3-coreml"
+    ],
+    "cleanup_model": "Ollama gemma3:4b",
+    "cleanup_ollama": "gemma3:4b",
+    "cleanup_ollama_digest": "sha256:68ceab7e468a31c988b44d5a4984a0e21f58c4f7158c6ce29c1804babac38df7"
+  },
+  "language": "en",
+  "cleanup": "on (AI enhancement, Ollama gemma3:4b)",
+  "notes": "ASR held at the shipped model. AI enhancement through FluidVoice's Ollama provider (http://localhost:11434/v1) with the pinned local model gemma3:4b. Its own Private AI provider is unavailable in the open-source build; Apple Intelligence requires macOS 26 (the host has macOS 15).",
+  "hosted_setup": false,
+  "settings_files": [
+    "~/Library/Preferences/com.FluidApp.app.plist"
+  ],
+  "logs": "unified:FluidVoice:",
+  "settings": {
+    "OnboardingCompleted": true,
+    "SelectedSpeechModel": "parakeet-tdt",
+    "EnableAIProcessing": true,
+    "SelectedProviderID": "ollama",
+    "SelectedAIModel": "gemma3:4b"
+  },
+  "verify": "FluidVoice needs the Ollama provider verified in its settings (it stores a fingerprint), so the setup can't preseed it: verify it once in the app. The pinned Ollama digest is gemma3:4b's manifest digest from registry.ollama.ai (2026-11-23): check `ollama list` shows ID 68ceab7e468a.",
+  "state": {
+    "paths": [
+      "~/Library/Application Support/FluidAudio",
+      "~/Library/Application Support/com.FluidApp.app",
+      "~/Library/Caches/com.FluidApp.app"
+    ],
+    "defaults": [
+      "com.FluidApp.app"
+    ]
+  },
+  "settings_source": {
+    "defaults": "com.FluidApp.app"
+  }
+}

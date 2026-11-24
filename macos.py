@@ -8,6 +8,7 @@ import ctypes.util
 import os
 import pathlib
 import subprocess
+import sys
 import time
 
 from harness import (Clip, Driver, InfraError, Key, MODIFIERS, KEYS, App, Target, Timing, key_events,
@@ -107,11 +108,24 @@ class CoreAudio:
         return out
 
     def find_input(self, device: str) -> int:
+        """The input device with exactly this name."""
         inputs = self.inputs()
-        hit = [d for n, d in inputs.items() if device.lower() in n.lower()]
-        if not hit:
-            raise SystemExit(f"no input device '{device}' (inputs: {list(inputs)})")
-        return hit[0]
+        if device not in inputs:
+            raise SystemExit(f"no input device named '{device}' (inputs: {list(inputs)})")
+        return inputs[device]
+
+    def capturing_pids(self) -> set[int] | None:
+        """PIDs of the processes capturing audio input now (macOS 14+ process objects); None if unknown."""
+        a, size = self.addr("prs#"), ctypes.c_uint32(0)
+        if self.ca.AudioObjectGetPropertyDataSize(1, ctypes.byref(a), 0, None, ctypes.byref(size)):
+            return None
+        objs = (ctypes.c_uint32 * (size.value // 4))()
+        if self.ca.AudioObjectGetPropertyData(1, ctypes.byref(a), 0, None, ctypes.byref(size), objs):
+            return None
+        try:
+            return {self.u32(o, "ppid") for o in objs if self.u32(o, "piri")}
+        except OSError:
+            return None
 
     def default_input_name(self) -> str:
         return self.name(self.u32(1, "dIn "))
@@ -162,10 +176,7 @@ class BlackHoleDriver(Driver):
         return self.keys.tap() if self.app.mode == "toggle" else self.keys.down()
 
     def mic_open(self) -> bool | None:
-        try:
-            return self.ca.running_somewhere(self.bh_in)
-        except OSError as e:
-            raise InfraError("err_ready", str(e)) from e
+        return mic_decision(self.ca.capturing_pids(), bundle_pids(self.app))
 
     def play(self, clip: Clip) -> float:
         self.error = None
@@ -208,6 +219,90 @@ class BlackHoleDriver(Driver):
         if restart:
             restart_app(self.app)
 
+    def rss_mb(self) -> float | None:
+        pids = bundle_pids(self.app)  # the bench's copy and its children only
+        return sum(rss for pid, _, rss, _ in _procs() if pid in pids) / 1024 if pids else None
+
+
+def _procs() -> list[tuple[int, int, int, str]]:
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,rss=,comm="], capture_output=True, text=True).stdout
+    procs = []
+    for line in out.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) == 4 and parts[0].isdigit() and parts[1].isdigit() and parts[2].isdigit():
+            procs.append((int(parts[0]), int(parts[1]), int(parts[2]), os.path.basename(parts[3])))
+    return procs
+
+
+def process_tree(procs, name: str) -> set[int]:
+    """PIDs of the processes named `name` and all their descendants (helpers, model servers)."""
+    tree = {p for p, _, _, comm in procs if comm == name}
+    grew = bool(tree)
+    while grew:
+        more = {p for p, pp, _, _ in procs if pp in tree} - tree
+        grew, tree = bool(more), tree | more
+    return tree
+
+
+def process_tree_pids(name: str) -> set[int]:
+    return process_tree(_procs(), name)
+
+
+def _paths() -> list[tuple[int, int, str]]:
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,comm="], capture_output=True, text=True).stdout
+    rows = []
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            rows.append((int(parts[0]), int(parts[1]), parts[2]))
+    return rows
+
+
+def tree_under(rows: list[tuple[int, int, str]], prefix: str) -> set[int]:
+    """PIDs of the processes whose executable lies inside `prefix` (the bench's own app bundle), and all
+    their descendants (helpers, model servers)."""
+    tree = {pid for pid, _, exe in rows if exe.startswith(prefix)}
+    grew = bool(tree)
+    while grew:
+        more = {pid for pid, ppid, _ in rows if ppid in tree} - tree
+        grew, tree = bool(more), tree | more
+    return tree
+
+
+def bundle_pids(app: App) -> set[int]:
+    """The processes launched from the bench's copy of the app (never an owner's copy of the same name)."""
+    return tree_under(_paths(), str(bundle(app)) + "/Contents/")
+
+
+def mic_decision(capturing: set[int] | None, app_tree: set[int]) -> bool:
+    """Readiness: True once the app under test (launched from the bench bundle) captures audio, False while
+    nothing does. No device-wide fallback: if CoreAudio can't say who is capturing, or anyone else is, or
+    the bench's app isn't running, the attempt is an infrastructure fault."""
+    if capturing is None:
+        raise InfraError("err_ready", "CoreAudio can't tell which process is capturing (needs macOS 14+); "
+                                      "the bench doesn't fall back to device-wide activity")
+    if not app_tree:
+        raise InfraError("err_ready", "the app launched from the bench folder isn't running")
+    others = capturing - app_tree
+    if others:
+        raise InfraError("err_ready", f"another process is capturing audio (pid {sorted(others)})")
+    return bool(capturing & app_tree)
+
+
+def process_tree_rss_mb(name: str) -> float | None:
+    procs = _procs()
+    tree = process_tree(procs, name)
+    return sum(rss for p, _, rss, _ in procs if p in tree) / 1024 if tree else None
+
+
+def apps_dir() -> pathlib.Path:
+    """Where the bench installs apps: its own folder, never /Applications (the owner's copies stay put)."""
+    return pathlib.Path(os.environ.get("BENCH_APPS") or pathlib.Path(__file__).resolve().parent / "work" / "Applications")
+
+
+def bundle(app: App) -> pathlib.Path:
+    return apps_dir() / pathlib.Path(app.app_path).name
+
 
 def restart_app(app: App, settle: float = 10.0) -> None:
     """Quit (TERM, then KILL) and reopen the app in the background, then let it load its model."""
@@ -218,7 +313,7 @@ def restart_app(app: App, settle: float = 10.0) -> None:
         time.sleep(0.2)
     else:
         subprocess.run(["pkill", "-KILL", "-x", app.process], check=False)
-    subprocess.run(["open", "-g", os.path.expanduser(app.app_path)], check=False)
+    subprocess.run(["open", "-g", str(bundle(app))], check=False)
     time.sleep(settle)
 
 
@@ -235,8 +330,14 @@ class TextEditTarget(Target):
         if not scratch.exists():  # never rewritten while open: TextEdit would report a conflicting change
             scratch.write_text("")
         self.app = self.window = self.area = None
-        subprocess.run(["pkill", "-x", "TextEdit"], check=False)
-        time.sleep(1)
+        # Never quit TextEdit: it may hold the owner's documents. It must be closed, or show only this one.
+        if self.AK.NSRunningApplication.runningApplicationsWithBundleIdentifier_(TEXTEDIT):
+            _, wins = self._get(self._app(), "AXWindows")
+            others = [str(self._get(w, "AXTitle")[1] or "") for w in wins or []]
+            others = [t for t in others if not t.startswith(scratch.name)]
+            if others:
+                raise SystemExit(f"TextEdit has other documents open ({len(others)}): save and quit it first; "
+                                 "the bench uses its own scratch document")
         subprocess.run(["open", "-F", "-a", "TextEdit", str(scratch)], check=False)
 
     def _get(self, el, attr):
@@ -333,8 +434,9 @@ def preflight(app: App) -> dict:
     env["default_input"] = CoreAudio().default_input_name()
     if "blackhole" not in env["default_input"].lower():
         raise SystemExit(f"the default input is '{env['default_input']}', not BlackHole 2ch (./bench machine)")
-    if subprocess.run(["pgrep", "-x", app.process], capture_output=True).returncode:
-        raise SystemExit(f"{app.process} isn't running: ./bench setup --app {app.name}, or open it")
+    if not bundle_pids(app):
+        raise SystemExit(f"{app.process} isn't running from the bench's copy ({bundle(app)}): "
+                         f"./bench setup --app {app.name}")
     exe = binary_path(app)
     env["binary_sha256"] = sha256_file(exe) if exe else ""
     return env
@@ -342,12 +444,12 @@ def preflight(app: App) -> dict:
 
 def binary_path(app: App) -> pathlib.Path | None:
     import plistlib
-    bundle = pathlib.Path(os.path.expanduser(app.app_path))
+    b = bundle(app)
     try:
-        info = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes())
+        info = plistlib.loads((b / "Contents" / "Info.plist").read_bytes())
     except OSError:
         return None
-    exe = bundle / "Contents" / "MacOS" / info.get("CFBundleExecutable", "")
+    exe = b / "Contents" / "MacOS" / info.get("CFBundleExecutable", "")
     return exe if exe.is_file() else None
 
 
@@ -362,3 +464,62 @@ def sha256_file(path: pathlib.Path) -> str:
 
 __all__ = ["BlackHoleDriver", "CoreAudio", "MacKeys", "TextEditTarget", "preflight", "restart_app",
            "MODIFIERS", "KEYS"]
+
+
+TEXT_CORRECTIONS = ("NSAutomaticCapitalizationEnabled", "NSAutomaticPeriodSubstitutionEnabled",
+                    "NSAutomaticSpellingCorrectionEnabled", "NSAutomaticQuoteSubstitutionEnabled",
+                    "NSAutomaticDashSubstitutionEnabled", "NSAutomaticTextReplacementEnabled",
+                    "NSAutomaticInlinePredictionEnabled", "NSAutomaticTextCompletionEnabled")
+
+
+def _out(*cmd: str) -> str:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=20).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def hardware() -> dict:
+    """The machine a run measured: chip, memory, macOS version and build, power source, load average."""
+    mem = _out("sysctl", "-n", "hw.memsize")
+    power = _out("pmset", "-g", "batt").splitlines()
+    return {"chip": _out("sysctl", "-n", "machdep.cpu.brand_string"),
+            "ram_gb": round(int(mem) / 2**30) if mem.isdigit() else None,
+            "macos": _out("sw_vers", "-productVersion"), "macos_build": _out("sw_vers", "-buildVersion"),
+            "power": power[0].split("'")[1] if power and "'" in power[0] else "",
+            "load": _out("sysctl", "-n", "vm.loadavg").strip("{} ")}
+
+
+def vm_running() -> bool:
+    """A virtual machine on this Mac (Virtualization.framework, which Lume and others use)."""
+    return bool(_out("pgrep", "-f", "com.apple.Virtualization.VirtualMachine"))
+
+
+def save_machine_state() -> dict:
+    """What `bench machine` changes: the default input (exact name) and the Mac-wide text corrections,
+    read strictly (a failed read stops the run instead of counting as absent)."""
+    from isolation import read_pref
+    return {"input": CoreAudio().default_input_name(), "defaults": {k: read_pref(k) for k in TEXT_CORRECTIONS}}
+
+
+def restore_machine_state(state: dict) -> list[str]:
+    """Puts the input and the text corrections back, then reads both back; returns what still differs."""
+    from isolation import RestoreError, read_pref, write_bool_pref
+    problems = []
+    for k, v in state["defaults"].items():
+        try:
+            write_bool_pref(k, v)
+            if (read_pref(k) is None) != (v is None) or (v is not None and read_pref(k) != v):
+                problems.append(f"{k} reads back as {read_pref(k)!r}, was {v!r}")
+        except RestoreError as e:
+            problems.append(str(e))
+    try:
+        ca = CoreAudio()
+        ca.set_default_input(ca.find_input(state["input"]))
+        if ca.default_input_name() != state["input"]:
+            problems.append(f"the default input is {ca.default_input_name()!r}, was {state['input']!r}")
+    except (SystemExit, OSError) as e:
+        problems.append(f"the default input: {e}")
+    for p in problems:
+        print(f"host-run: NOT RESTORED: {p}", file=sys.stderr)
+    return problems

@@ -54,7 +54,7 @@ if [ "$profile" = shipped ]; then
   cleanup='localStorage.setItem("useCleanupModel","true"); localStorage.setItem("cleanupMode","local"); localStorage.setItem("cleanupProvider","qwen"); localStorage.setItem("cleanupModel","qwen3.5-2b-q4_k_m");'
 fi
 port=9229
-open -g /Applications/OpenWhispr.app --args --remote-debugging-port=$port
+open -g "$APPS/OpenWhispr.app" --args --remote-debugging-port=$port
 sleep 15
 # The keys onboarding's finish writes for a guest (OnboardingFlow finalizeOnboarding: the guest markers,
 # the session cleared, onboardingCompleted; AppRouter shows onboarding again without them), and those
@@ -75,6 +75,6 @@ touch "$ud/.env"
 sed -i '' '/^DICTATION_KEY=/d; /^ACTIVATION_MODE=/d' "$ud/.env"
 printf 'DICTATION_KEY=RightOption\nACTIVATION_MODE=push\n' >>"$ud/.env"
 # Debug-level logging, so a failed smoke test shows why (its audio is only the synthetic sentence).
-open -g --env OPENWHISPR_LOG_LEVEL=debug /Applications/OpenWhispr.app
+open -g --env OPENWHISPR_LOG_LEVEL=debug "$APPS/OpenWhispr.app"
 for _ in $(seq 1 60); do pgrep -x OpenWhispr >/dev/null && break; sleep 1; done
 sleep 15
