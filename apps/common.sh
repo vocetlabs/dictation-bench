@@ -8,7 +8,15 @@ log() { echo "setup: $*" >&2; }
 # The bench's own app folder, always <bench>/work/Applications (macos.apps_dir), with no override:
 # /Applications is shared with the owner, so the bench never installs into or deletes from it. A host run
 # has already cleared the app's settings and data in the bench account (isolation.py); setup writes fresh ones.
-APPS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/work/Applications"
+# No symlink may redirect it: the bench folder (its real path) must be inside this account's home, and work/
+# and work/Applications must be real folders.
+BENCH_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+APPS="$BENCH_ROOT/work/Applications"
+case "$BENCH_ROOT/" in "$(cd -P "$HOME" && pwd -P)"/*) ;; *)
+  log "the bench folder $BENCH_ROOT isn't inside this account's home: refusing"; exit 1 ;; esac
+for d in "$BENCH_ROOT/work" "$APPS"; do
+  [ ! -L "$d" ] || { log "$d is a symlink: refusing (the bench installs only into its own folder)"; exit 1; }
+done
 mkdir -p "$APPS"
 
 # install_dmg <url> <sha256> <App.app>: the maintainer's signed release into the bench's app folder.

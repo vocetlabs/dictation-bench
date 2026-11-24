@@ -1,5 +1,5 @@
-"""Host-run safety (BENCH2). Host runs happen only in the bench's own Standard macOS account (BENCH_USER,
-default `vocetbench`; no admin rights, no Apple ID), so the owner's Keychain, settings and app data sit in
+"""Host-run safety (BENCH2). Host runs happen only in the bench's own Standard macOS account, `vocetbench`
+(fixed, no override; no admin rights, no Apple ID), so the owner's Keychain, settings and app data sit in
 another account and the bench never touches them. /Applications is shared with the owner: the bench installs
 only into its own work/Applications and quits only processes launched from there (macos.quit_tree).
 
@@ -21,7 +21,7 @@ import shutil
 import signal
 import subprocess
 
-DEFAULT_BENCH_USER = "vocetbench"
+BENCH_USER = "vocetbench"  # fixed: an override could name the owner's account
 TERMINATING = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 
@@ -57,16 +57,15 @@ def export_domain(domain: str, run=_run) -> bytes | None:
 
 
 def check_bench_account(name: str | None = None, groups: set[str] | None = None) -> None:
-    """Host runs start only as the bench's own account (BENCH_USER, default vocetbench), and only if it isn't
-    an administrator: the owner's data stays in their own account, out of the bench's reach."""
+    """Host runs start only as the bench's own account, `vocetbench` (no override), and only if it isn't an
+    administrator: the owner's data stays in their own account, out of the bench's reach."""
     import grp
     import pwd
-    want = os.environ.get("BENCH_USER") or DEFAULT_BENCH_USER
     pw = pwd.getpwuid(os.getuid())
     name = name if name is not None else pw.pw_name
-    if name != want:
-        raise SystemExit(f"host runs happen only in the bench's own macOS account '{want}' (BENCH_USER); this is "
-                         f"'{name}'. Log in as {want}: a Standard user with no Apple ID (CONFIGS.md)")
+    if name != BENCH_USER:
+        raise SystemExit(f"host runs happen only in the bench's own macOS account '{BENCH_USER}'; this is "
+                         f"'{name}'. Log in as {BENCH_USER}: a Standard user with no Apple ID (CONFIGS.md)")
     if groups is None:
         groups = set()
         for gid in os.getgrouplist(name, pw.pw_gid):
@@ -75,6 +74,18 @@ def check_bench_account(name: str | None = None, groups: set[str] | None = None)
     if "admin" in groups:
         raise SystemExit(f"'{name}' is an administrator: host runs need a Standard account (System Settings > "
                          "Users & Groups), so the bench can't change what other accounts own")
+
+
+def check_bench_dirs(bench: pathlib.Path, home: str | None = None) -> None:
+    """The bench's folder, work/ and work/Applications are real folders (no symlink that could point the
+    installer's delete and copy at /Applications) inside this account's home."""
+    root = pathlib.Path(home or os.path.expanduser("~")).resolve()
+    for p in (bench, bench / "work", bench / "work" / "Applications"):
+        if p.is_symlink():
+            raise SystemExit(f"{p} is a symlink: the bench installs only into its own real folder")
+    real = (bench / "work" / "Applications").resolve()
+    if root not in real.parents:
+        raise SystemExit(f"the bench's app folder {real} isn't inside this account's home ({root})")
 
 
 def clear_state(paths: list[str], domains: list[str], home: str | None = None, run=_run) -> None:

@@ -142,8 +142,9 @@ def setup(name: str, ci: bool, overwrite: bool = False, isolated: bool = False) 
     grant = ci or (os.environ.get("BENCH_CI") == "1" and in_vm())  # a VM: `BENCH_CI=1 ./bench setup ...`
     if os.environ.get("BENCH_CI") == "1" and not grant:
         raise SystemExit("BENCH_CI=1 writes permission rows with sudo: only in a virtual machine, never on a host")
+    gate = HOST_GATE.read_text().strip() if isolated and HOST_GATE.exists() else ""
     env = dict(os.environ, BENCH_CI="1" if grant else "", BENCH=str(HERE), BENCH_PROFILE=app.profile,
-               BENCH_HOST_RUN="1" if isolated else "")
+               BENCH_HOST_RUN=gate)  # host-run's nonce, only from host-run itself
     subprocess.run(["bash", str(script)], check=True, env=env)
 
 
@@ -457,6 +458,8 @@ def host_plan(jobs: list[str], passes: int, first_pass: int = 1, seed: int = 202
 
 MACHINE_FILE = HERE / "work" / "host-input.json"  # the input device to put back after a cut-off host run
 HOST_LOCK = HERE / "work" / "host.lock"
+HOST_GATE = HERE / "work" / "host-run.gate"  # a nonce that exists only while host-run runs: apps/voiceink.sh
+                                            #   launches VoiceInk on a host only when it matches
 
 
 def bench_apps_prefix() -> str:
@@ -481,29 +484,35 @@ def refuse_foreign_copies() -> None:
 
 def restore_host() -> int:
     """After a host run that was cut off: quits the bench's apps and puts the default input back."""
-    from isolation import check_bench_account, host_lock, signals_held
+    from isolation import check_bench_account, check_bench_dirs, host_lock, signals_held
     from macos import restore_input
     check_bench_account()
+    check_bench_dirs(HERE)
+    failed = False
     with host_lock(HOST_LOCK), signals_held():
+        HOST_GATE.unlink(missing_ok=True)
         if MACHINE_FILE.exists():
             if restore_input(json.loads(MACHINE_FILE.read_text())):
-                return 1
-            MACHINE_FILE.unlink()
-            print("restored the default input")
+                failed = True  # reported; the apps are still quit below
+            else:
+                MACHINE_FILE.unlink()
+                print("restored the default input")
         quit_bench_apps()  # nothing of the bench's left running
-    return 0
+    return 1 if failed else 0
 
 
 def host_run(a: argparse.Namespace) -> int:
-    """Passes of app:profile jobs on the bench Mac (BENCH2), in the bench's own Standard account (BENCH_USER,
-    default vocetbench), so the owner's Keychain, settings and app data are in another account. Apps go into
+    """Passes of app:profile jobs on the bench Mac (BENCH2), in the bench's own Standard account (vocetbench,
+    no override), so the owner's Keychain, settings and app data are in another account. Apps go into
     the bench's own folder and are quit by PID, never from /Applications. Each job deletes the app's state in
     this account, sets it up for its profile and runs it. The default input is saved by UID and put back,
     also on SIGTERM and SIGHUP; `restore-host` finishes that after a crash."""
     from datetime import datetime
-    from isolation import check_bench_account, clear_state, host_lock, on_termination, signals_held
+    import secrets
+    from isolation import check_bench_account, check_bench_dirs, clear_state, host_lock, on_termination, signals_held
     from macos import hardware, restore_input, save_input, vm_running
     check_bench_account()
+    check_bench_dirs(HERE)
     jobs = [config_name(j) for j in a.jobs.split(",") if j]
     for j in jobs:
         app = app_config(j)
@@ -532,6 +541,7 @@ def host_run(a: argparse.Namespace) -> int:
             MACHINE_FILE.write_text(json.dumps(state))
         problems: list[str] = []
         try:
+            HOST_GATE.write_text(secrets.token_hex(16))
             quit_bench_apps()
             machine(False)
             for step in plan:
@@ -556,6 +566,7 @@ def host_run(a: argparse.Namespace) -> int:
                     write()
         finally:
             with signals_held():  # the input first: a bench app that won't quit can't keep it from coming back
+                HOST_GATE.unlink(missing_ok=True)
                 problems = restore_input(state)
                 if not problems:
                     MACHINE_FILE.unlink(missing_ok=True)

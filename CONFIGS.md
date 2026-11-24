@@ -108,14 +108,16 @@ its first night, so its three nights fall inside the trial.
 
 ## The bench Mac (host runs)
 
-Host runs happen in the bench's own macOS account on the owner's Mac: a Standard user (default
-`vocetbench`, set by `BENCH_USER`) with no admin rights and no Apple ID, logged in as the active console
+Host runs happen in the bench's own macOS account on the owner's Mac: the Standard user `vocetbench`
+(fixed, no override) with no admin rights and no Apple ID, logged in as the active console
 session for the night. The owner's Keychain, settings, app data and documents are in another account, out of
 the bench's reach. `host-run` and `restore-host` refuse to start as any other user or as an administrator.
 
 - `/Applications` is shared with the owner: the bench never installs into it, deletes from it or quits an
-  app from it. Apps are installed only into the bench's own folder (`work/Applications`) and quit by PID,
-  only the processes launched from there (and their children), never by process name. A host run refuses to
+  app from it. Apps are installed only into the bench's own folder (`work/Applications`; setup and host runs
+  refuse if it, `work` or the bench folder is a symlink, or its real path is outside the account's home) and
+  quit by PID, only processes whose own executable is in there (never a descendant from elsewhere), never by
+  process name. A host run refuses to
   start while a benchmarked app runs in the bench account from anywhere else.
 - Each job deletes the selected app's state in the bench account (its data folders and preference domains,
   each profile's `state`, all inside the account's home), then setup writes the profile's. Model downloads
@@ -124,8 +126,8 @@ the bench's reach. `host-run` and `restore-host` refuse to start as any other us
   and read back at the end, also on Ctrl-C, SIGTERM and SIGHUP; signals wait while it is saved or restored.
   The text corrections `bench machine` turns off are the bench account's own preferences and stay off.
 - A lock (`work/host.lock`) allows one `host-run` or `restore-host` at a time. If a run is cut off anyway,
-  `./bench restore-host` quits the bench's apps and puts the input back (`work/host-input.json`); a new
-  host run refuses to start until it has.
+  `./bench restore-host` puts the input back (`work/host-input.json`) and quits the bench's apps, even when
+  the input can't be put back (then it reports the failure); a new host run refuses to start until it has.
 - TextEdit must be closed, or show only the bench's scratch document (`work/scratch.txt`, matched by its
   exact path); the bench never quits it.
 - `./bench setup` outside CI and a host run refuses to overwrite an app's existing settings unless
