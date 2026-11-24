@@ -35,7 +35,6 @@ import argparse
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -126,20 +125,22 @@ def owner_state(app: hn.App) -> list[str]:
 
 def setup(name: str, ci: bool, overwrite: bool = False, isolated: bool = False) -> None:
     """Installs the app into the bench's own folder and writes its profile's settings. Outside CI and a host
-    run (which sets the owner's state aside first), it refuses to overwrite existing settings unless told."""
+    run (which runs in the bench's own account and clears the app's state first), it refuses to overwrite
+    existing settings unless told."""
     app = app_config(name)
     if app.na:
         raise SystemExit(runnable(app))
     if not (ci or overwrite or isolated) and (existing := owner_state(app)):
         raise SystemExit(f"setting up {app.name} would overwrite this Mac's {app.base} settings or data "
-                         f"({', '.join(existing)}). Use ./bench host-run, which sets them aside and puts them back, "
+                         f"({', '.join(existing)}). Use ./bench host-run in the bench's own account, "
                          "or pass --overwrite on a test machine or VM.")
     script = HERE / "apps" / f"{app.base}.sh"
     if ci and not app.hosted_setup:
         raise SystemExit(f"{app.name} has no unattended setup yet (apps/{app.name}.json hosted_setup=false): local only")
     if app.verify:
         print(f"setup: {app.name} needs the Lead to verify in a VM: {app.verify}", file=sys.stderr)
-    env = dict(os.environ, BENCH_CI="1" if ci else "", BENCH=str(HERE), BENCH_PROFILE=app.profile)
+    env = dict(os.environ, BENCH_CI="1" if ci else "", BENCH=str(HERE), BENCH_PROFILE=app.profile,
+               BENCH_HOST_RUN="1" if isolated else "")
     subprocess.run(["bash", str(script)], check=True, env=env)
 
 
@@ -261,24 +262,27 @@ def settings_problems(app: hn.App, read_pref=None, export=None) -> tuple[dict, l
         if pathlib.Path(os.path.expanduser(f)).exists():
             problems.append(f"{f} must be absent for this profile")
     if model := app.model.get("cleanup_ollama"):
-        got["cleanup_ollama_id"] = ollama_id(model)
+        got["cleanup_ollama_digest"] = ollama_digest(model)
         want = app.model.get("cleanup_ollama_digest", "")
-        if not got["cleanup_ollama_id"]:
+        if not got["cleanup_ollama_digest"]:
             problems.append(f"the Ollama model {model} isn't installed")
-        elif not want.startswith("sha256:") or want[7:7 + len(got["cleanup_ollama_id"])] != got["cleanup_ollama_id"]:
-            problems.append(f"the Ollama model {model} is {got['cleanup_ollama_id']}, not the pinned {want or '(none)'}")
+        elif got["cleanup_ollama_digest"] != want:
+            problems.append(f"the Ollama model {model} is {got['cleanup_ollama_digest']}, not the pinned "
+                            f"{want or '(none)'}")
     return got, problems
 
 
-def ollama_id(model: str, run=subprocess.run) -> str | None:
-    """`ollama list`'s ID of an installed model (the first 12 hex of its manifest digest), or None."""
-    if not shutil.which("ollama") and run is subprocess.run:
+def ollama_digest(model: str, fetch=None) -> str | None:
+    """The full manifest digest ("sha256:<64 hex>") of an installed Ollama model, from the local server's
+    /api/tags, or None when it isn't installed or the server doesn't answer."""
+    import urllib.request
+    try:
+        raw = fetch() if fetch else urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=10).read()
+        tags = json.loads(raw).get("models", [])
+    except (OSError, ValueError):
         return None
-    for ln in run(["ollama", "list"], capture_output=True, text=True).stdout.splitlines()[1:]:
-        parts = ln.split()
-        if len(parts) > 1 and parts[0] == model:
-            return parts[1]
-    return None
+    hit = next((m.get("digest", "") for m in tags if model in (m.get("name"), m.get("model"))), "")
+    return f"sha256:{hit}" if hit and not hit.startswith("sha256:") else hit or None
 
 
 def run(a: argparse.Namespace) -> int:
@@ -442,132 +446,114 @@ def host_plan(jobs: list[str], passes: int, first_pass: int = 1, seed: int = 202
             for p in range(first_pass, first_pass + passes)]
 
 
-STASH = HERE / "work" / "stash"
+MACHINE_FILE = HERE / "work" / "host-input.json"  # the input device to put back after a cut-off host run
+HOST_LOCK = HERE / "work" / "host.lock"
 
 
-def dictation_processes() -> set[str]:
-    """Every benchmarked app's process name: all of them are quit before a job, so only one can listen."""
-    return {hn.load_app(p).process for p in (HERE / "apps").glob("*.*.json")}
+def bench_apps_prefix() -> str:
+    from macos import apps_dir
+    return str(apps_dir()) + "/"
 
 
-def owner_bundles(processes: set[str]) -> list[str]:
-    """The app bundles of those processes running now (the owner's own copies), to reopen afterwards."""
-    out = subprocess.run(["ps", "-axo", "comm="], capture_output=True, text=True).stdout.splitlines()
-    found = []
-    for exe in out:
-        if os.path.basename(exe) in processes and ".app/" in exe:
-            b = exe[:exe.index(".app/") + 4]
-            if b not in found and not b.startswith(str(HERE)):
-                found.append(b)
-    return found
+def quit_bench_apps() -> None:
+    """Quits everything launched from the bench's own app folder, by PID (never an /Applications copy)."""
+    from macos import quit_tree
+    quit_tree(bench_apps_prefix())
 
 
-def quit_all(processes: set[str]) -> None:
-    from isolation import wait_gone
-    for name in processes:
-        subprocess.run(["pkill", "-TERM", "-x", name], capture_output=True)
-    for name in processes:
-        if not wait_gone(name):
-            subprocess.run(["pkill", "-KILL", "-x", name], capture_output=True)
-            if not wait_gone(name, 5):
-                raise SystemExit(f"{name} won't quit: stopping before anything is changed")
-
-
-def app_state(app: hn.App):
-    from isolation import AppState
-    return AppState(app.base, app.state.get("paths", []), app.state.get("defaults", []), STASH / app.base)
+def refuse_foreign_copies() -> None:
+    """A benchmarked app running in this account from anywhere but the bench's folder would compete for the
+    microphone, and the bench never quits it: the host run doesn't start."""
+    from macos import _paths, foreign_copies
+    names = {hn.load_app(p).process for p in (HERE / "apps").glob("*.*.json")}
+    if found := foreign_copies(_paths(), names, bench_apps_prefix()):
+        raise SystemExit("quit these first (the bench never quits apps outside its own folder):\n  " +
+                         "\n  ".join(found))
 
 
 def restore_host() -> int:
-    """After a host run that didn't finish: put every app's state and the machine settings back."""
-    from isolation import AppState, RestoreError
-    bad = 0
-    for m in sorted(STASH.glob("*/manifest.json")):
-        try:
-            AppState(m.parent.name, [], [], m.parent).restore()
-            print(f"restored {m.parent.name}")
-        except (RestoreError, OSError) as e:
-            bad += 1
-            print(f"NOT restored {m.parent.name}: {e}", file=sys.stderr)
-    machine_file = STASH / "machine.json"
-    if machine_file.exists():
-        from macos import restore_machine_state
-        if restore_machine_state(json.loads(machine_file.read_text())):
-            bad += 1
-        else:
-            machine_file.unlink()
-            print("restored the input device and text corrections")
-    return 1 if bad else 0
+    """After a host run that was cut off: quits the bench's apps and puts the default input back."""
+    from isolation import check_bench_account, host_lock, signals_held
+    from macos import restore_input
+    check_bench_account()
+    with host_lock(HOST_LOCK), signals_held():
+        if MACHINE_FILE.exists():
+            if restore_input(json.loads(MACHINE_FILE.read_text())):
+                return 1
+            MACHINE_FILE.unlink()
+            print("restored the default input")
+        quit_bench_apps()  # nothing of the bench's left running
+    return 0
 
 
 def host_run(a: argparse.Namespace) -> int:
-    """Passes of app:profile jobs on the owner's Mac (BENCH2). Nothing of the owner's is deleted or
-    overwritten: apps go into the bench's own folder; for each job every benchmarked app is quit, the
-    selected app's settings, data and models are moved aside and put back exactly afterwards (checked), and
-    the input device and text corrections are restored and checked; SIGTERM and SIGHUP restore too."""
+    """Passes of app:profile jobs on the bench Mac (BENCH2), in the bench's own Standard account (BENCH_USER,
+    default vocetbench), so the owner's Keychain, settings and app data are in another account. Apps go into
+    the bench's own folder and are quit by PID, never from /Applications. Each job deletes the app's state in
+    this account, sets it up for its profile and runs it. The default input is saved by UID and put back,
+    also on SIGTERM and SIGHUP; `restore-host` finishes that after a crash."""
     from datetime import datetime
-    from isolation import on_termination
-    from macos import hardware, restore_machine_state, save_machine_state, vm_running
+    from isolation import check_bench_account, clear_state, host_lock, on_termination, signals_held
+    from macos import hardware, restore_input, save_input, vm_running
+    check_bench_account()
     jobs = [config_name(j) for j in a.jobs.split(",") if j]
     for j in jobs:
         app = app_config(j)
         if why := runnable(app):
             raise SystemExit(why)
         if not app.state.get("paths") and not app.state.get("defaults"):
-            raise SystemExit(f"{app.name} declares no `state` to set aside: not run on a host")
+            raise SystemExit(f"{app.name} declares no `state` to clear: not run on a host")
         if app.verify and not a.unverified_ok:
             raise SystemExit(f"{app.name} isn't verified yet ({app.verify}); pass --unverified-ok for a trial")
     if vm_running():
         raise SystemExit("a virtual machine is running: stop it before a host run (timed numbers)")
-    if list(STASH.glob("*/manifest.json")) or (STASH / "machine.json").exists():
-        raise SystemExit("an earlier host run didn't finish: run `./bench restore-host` first")
-    out = a.out or HERE / "out" / "host" / datetime.now().strftime("%Y%m%d-%H%M")
-    out.mkdir(parents=True, exist_ok=True)
-    plan = host_plan(jobs, a.passes, a.first_pass, a.seed)
-    log = {"plan": plan, "hardware_start": hardware(), "jobs": []}
-    write = lambda: (out / "host.json").write_text(json.dumps(log, indent=1) + "\n")  # noqa: E731
-    write()
-    print(f"host run -> {out}: {len(plan)} passes of {', '.join(jobs)}; load {log['hardware_start']['load']}")
-    procs = dictation_processes()
-    reopen = owner_bundles(procs)
-    STASH.mkdir(parents=True, exist_ok=True)
-    state = save_machine_state()
-    (STASH / "machine.json").write_text(json.dumps(state))
-    on_termination()
-    problems: list[str] = []
-    try:
-        quit_all(procs)  # the owner's copies too; reopened at the end
-        machine(False)
-        for step in plan:
-            for name in step["order"]:
-                app = app_config(name)
-                entry = {"pass": step["pass"], "config": name, "load_before": hardware()["load"]}
-                quit_all(procs)
-                st = app_state(app)
-                st.save()
-                try:
-                    setup(name, False, isolated=True)
-                    entry["exit"] = run_job(app, machine=a.machine, output=out / f"pass{step['pass']}" / name,
-                                            seed=step["seed"], extra={"host_run": {"pass": step["pass"]}},
-                                            unverified_ok=a.unverified_ok)
-                except (subprocess.CalledProcessError, SystemExit) as e:
-                    entry["exit"], entry["error"] = 1, str(e)[:300]
-                    if "signal" in str(e):
-                        raise
-                finally:
-                    quit_all(procs)
-                    st.restore()
-                entry["load_after"] = hardware()["load"]
-                log["jobs"].append(entry)
-                write()
-    finally:
-        problems = restore_machine_state(state)
-        if not problems:
-            (STASH / "machine.json").unlink(missing_ok=True)
-        for b in reopen:
-            subprocess.run(["open", "-g", b], capture_output=True)
-        log["hardware_end"], log["not_restored"] = hardware(), problems
+    with host_lock(HOST_LOCK):
+        if MACHINE_FILE.exists():
+            raise SystemExit("an earlier host run didn't finish: run `./bench restore-host` first")
+        refuse_foreign_copies()
+        out = a.out or HERE / "out" / "host" / datetime.now().strftime("%Y%m%d-%H%M")
+        out.mkdir(parents=True, exist_ok=True)
+        plan = host_plan(jobs, a.passes, a.first_pass, a.seed)
+        log = {"plan": plan, "hardware_start": hardware(), "jobs": []}
+        write = lambda: (out / "host.json").write_text(json.dumps(log, indent=1) + "\n")  # noqa: E731
         write()
+        print(f"host run -> {out}: {len(plan)} passes of {', '.join(jobs)}; load {log['hardware_start']['load']}")
+        on_termination()
+        with signals_held():  # saved before anything changes, and never half-written
+            state = save_input()
+            MACHINE_FILE.write_text(json.dumps(state))
+        problems: list[str] = []
+        try:
+            quit_bench_apps()
+            machine(False)
+            for step in plan:
+                for name in step["order"]:
+                    app = app_config(name)
+                    entry = {"pass": step["pass"], "config": name, "load_before": hardware()["load"]}
+                    try:
+                        quit_bench_apps()
+                        clear_state(app.state.get("paths", []), app.state.get("defaults", []))
+                        setup(name, False, isolated=True)
+                        entry["exit"] = run_job(app, machine=a.machine, output=out / f"pass{step['pass']}" / name,
+                                                seed=step["seed"], extra={"host_run": {"pass": step["pass"]}},
+                                                unverified_ok=a.unverified_ok)
+                    except (subprocess.CalledProcessError, SystemExit) as e:
+                        entry["exit"], entry["error"] = 1, str(e)[:300]
+                        if "signal" in str(e):
+                            raise
+                    finally:
+                        quit_bench_apps()
+                    entry["load_after"] = hardware()["load"]
+                    log["jobs"].append(entry)
+                    write()
+        finally:
+            with signals_held():  # the input first: a bench app that won't quit can't keep it from coming back
+                problems = restore_input(state)
+                if not problems:
+                    MACHINE_FILE.unlink(missing_ok=True)
+                log["hardware_end"], log["not_restored"] = hardware(), problems
+                write()
+                quit_bench_apps()
     failed = [j for j in log["jobs"] if j.get("exit")]
     print(f"host run done: {len(log['jobs']) - len(failed)}/{len(log['jobs'])} jobs scored; then: ./bench judge "
           f"<run> and ./bench report {out}/pass*/*")

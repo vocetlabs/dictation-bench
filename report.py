@@ -119,9 +119,9 @@ def check_comparable(runs: list[dict], speakers: dict[str, str]) -> list[str]:
         by.setdefault(r["config"], []).append(r)
     for name, rs in by.items():  # the passes of one configuration must be the same app, model and settings
         eff = lambda r: {k: (r["run"].get("effective") or {}).get(k)  # noqa: E731
-                         for k in ("binary_sha256", "release_sha256", "model_sha256", "settings")}
+                         for k in ("binary_sha256", "release_sha256", "model_sha256", "settings", "settings_sha256")}
         if len({json.dumps(eff(r), sort_keys=True) for r in rs}) > 1:
-            problems.append(f"{name}: its passes differ in app binary, release, model files or settings")
+            problems.append(f"{name}: its passes differ in app binary, release, model files, settings or settings files")
     judged = [r for r in runs if r["judge"]]
     if judged:
         if len(judged) != len(runs):

@@ -36,7 +36,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
-HARNESS_VERSION = "2"
+HARNESS_VERSION = "3"
 
 FIELDS = ["clip_id", "status", "attempts", "transcript", "audio_s", "speech_end_s", "ready_s", "e2t_s",
           "post_stop_s", "first_text_s", "error", "run_at"]

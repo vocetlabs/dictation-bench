@@ -5,9 +5,10 @@ PROFILE=${BENCH_PROFILE:-shipped}  # apps/<app>.<profile>.json: shipped, best-as
 USER_TCC="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
 SYS_TCC="/Library/Application Support/com.apple.TCC/TCC.db"
 log() { echo "setup: $*" >&2; }
-# The bench's own app folder: never /Applications, so the owner's installed copies are never replaced. A
-# host run has already moved the app's settings and data aside (isolation.py); setup writes fresh ones.
-APPS=${BENCH_APPS:-${BENCH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/work/Applications}
+# The bench's own app folder, always <bench>/work/Applications (macos.apps_dir), with no override:
+# /Applications is shared with the owner, so the bench never installs into or deletes from it. A host run
+# has already cleared the app's settings and data in the bench account (isolation.py); setup writes fresh ones.
+APPS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/work/Applications"
 mkdir -p "$APPS"
 
 # install_dmg <url> <sha256> <App.app>: the maintainer's signed release into the bench's app folder.

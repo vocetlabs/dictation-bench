@@ -36,8 +36,8 @@ After that, any change gets a dated entry below and the affected configurations 
   (`--unverified-ok`), recorded in `run.json`; `report` refuses trials.
 - **Comparable runs only.** `report` pools and ranks runs only with the same protocol, harness version,
   manifest, dataset, clip selection, machine label and machine (chip, memory, macOS build) and the same
-  judge; the passes of one configuration must also share the app binary, release, model files and
-  settings.
+  judge; the passes of one configuration must also share the app binary, release, model files, settings
+  and settings files (their sha256).
 - **Separate columns:** spoken-text WER, intended-text WER, ZER, AMEND, failure rate, p50 and p95 latency,
   peak resident memory (the app and its child processes, sampled after each clip) and model disk size.
 - **Infrastructure faults** (focus lost, a failed read, playback, no microphone) are retried up to 3 times;
@@ -89,41 +89,46 @@ picker; Handy and FluidVoice paste the Ollama-cleaned text (`gemma3:4b` served a
 FluidVoice needs its Ollama provider verified once in the app); Muesli downloads Cleanup Lite and cleans a
 dictation; FluidVoice downloads Whisper Large (its files then go into the profile's `model.files`); Vocet
 0.2.0 without the Gemma file pastes raw OrukQwen text and doesn't download Gemma again; the bench's Vocet
-copy may ask for Keychain access to the owner's saved key at launch (it doesn't need it for local
-dictation): check this doesn't take the focus during a run. **Verify on the host** (no VM can do it; a
-30 s smoke on the benchmark account, before the profile's first night): `voiceink.local-cleanup` (Refine
+copy runs in the bench account, which holds no saved key. **Verify on the host** (no VM can do it; a
+30 s smoke in the bench account, before the profile's first night): `voiceink.local-cleanup` (Refine
 needs 16 GB; the VMs have 8 GB) and `openwhispr.shipped` (its Qwen3.5 2B cleanup takes over 60 s on a VM's
 paravirtual GPU). `voiceink.shipped`, `voiceink.best-asr` and `openwhispr.best-asr` pass the smoke and
 10 clips in the bench VM (`dictation-vm-benchapps`, README); VoiceInk best-asr was probed there with
 Parakeet Ultra (10 of 10 clips ok; 10 clips decide nothing about accuracy, the pick follows the registry).
 
 **VoiceInk's trial.** The official release runs a 7-day trial that starts at its first launch (the start
-date goes into the login Keychain, which the bench never writes). After it, every paste starts with "Your
-trial has ended. Upgrade to VoiceInk Pro..." The harness stops any run whose paste holds that notice
-(`refusal_text`): the clip is recorded as `refused`, which no score accepts. All smoke tests and pre-night
-checks happen in the VM; on a host, VoiceInk is first launched on its first night (in the benchmark
-account), so its three nights fall inside the trial.
+date goes into the login Keychain of the account it runs in, which the bench never writes). After it, every
+paste starts with "Your trial has ended. Upgrade to VoiceInk Pro..." A paste holding that notice
+(`refusal_text`) at any point, including the quiet period after a partial paste, records the clip as
+`refused`, which no score accepts, and stops the run (a smoke test that shows it stops too). All smoke tests
+and pre-night checks happen in the VM: `./bench setup --app voiceink` on its own never launches VoiceInk on
+a Mac that isn't a virtual machine; on the host, only `host-run` (in the bench account) launches it, first on
+its first night, so its three nights fall inside the trial.
 
-## The owner's Mac (host runs)
+## The bench Mac (host runs)
 
-A host run never deletes or overwrites the owner's apps, settings or models, and never quits their
-TextEdit documents:
+Host runs happen in the bench's own macOS account on the owner's Mac: a Standard user (default
+`vocetbench`, set by `BENCH_USER`) with no admin rights and no Apple ID, logged in as the active console
+session for the night. The owner's Keychain, settings, app data and documents are in another account, out of
+the bench's reach. `host-run` and `restore-host` refuse to start as any other user or as an administrator.
 
-- Apps are installed into the bench's own folder (`work/Applications`), never `/Applications`.
-- Before each job every benchmarked app (the owner's copies too) is quit. The selected app's data folders
-  and preference domains (each profile's `state`: for Vocet its settings, history, logs, models, caches
-  and preferences) are moved aside by rename, so they come back byte for byte; setup then writes fresh
-  ones. Afterwards the bench's copies are removed, the owner's are moved back, and both are checked. The
-  Keychain is never written. Model downloads are cached in `work/cache` and cloned in.
-- The input device (by exact name) and the Mac-wide text corrections are saved strictly (a failed read
-  stops the run) and restored and read back at the end, also on SIGTERM and SIGHUP. The owner's apps that
-  were open are reopened.
-- If a run is cut off anyway, `./bench restore-host` finishes the restoration from `work/stash`; a new host
-  run refuses to start until it has.
-- TextEdit must be closed, or show only the bench's scratch document (`work/scratch.txt`); the bench never
-  quits it.
-- `./bench setup` outside CI refuses to overwrite an app's existing settings unless `--overwrite` (a test
-  machine or VM).
+- `/Applications` is shared with the owner: the bench never installs into it, deletes from it or quits an
+  app from it. Apps are installed only into the bench's own folder (`work/Applications`) and quit by PID,
+  only the processes launched from there (and their children), never by process name. A host run refuses to
+  start while a benchmarked app runs in the bench account from anywhere else.
+- Each job deletes the selected app's state in the bench account (its data folders and preference domains,
+  each profile's `state`, all inside the account's home), then setup writes the profile's. Model downloads
+  are cached in `work/cache` and cloned in.
+- The default input device (which CoreAudio may share between accounts) is saved by its UID and put back
+  and read back at the end, also on Ctrl-C, SIGTERM and SIGHUP; signals wait while it is saved or restored.
+  The text corrections `bench machine` turns off are the bench account's own preferences and stay off.
+- A lock (`work/host.lock`) allows one `host-run` or `restore-host` at a time. If a run is cut off anyway,
+  `./bench restore-host` quits the bench's apps and puts the input back (`work/host-input.json`); a new
+  host run refuses to start until it has.
+- TextEdit must be closed, or show only the bench's scratch document (`work/scratch.txt`, matched by its
+  exact path); the bench never quits it.
+- `./bench setup` outside CI and a host run refuses to overwrite an app's existing settings unless
+  `--overwrite` (a test machine or VM).
 
 Not yet covered here: Hex and OpenSuperWhisper (setups still to write). Buzz and Vibe are out of scope
 (file transcription, not dictation).
@@ -160,3 +165,6 @@ is the same configuration as shipped and isn't run on its own.
   shipped profile includes its default 16 GB+ local cleanup; VoiceInk's models go where FluidAudio at its
   pinned commit looks (`Models/parakeet-tdt-0.6b-v3`, `Models/silero-vad`), and its mode has live
   transcription on as onboarding writes it.
+- 2026-11-23 (BENCH2 review): harness version 3. A read that straddles the deadline no longer counts, so
+  runs with harness version 2 don't pool with later ones. Ollama cleanup models are checked against their
+  full manifest digest. Host runs move to the bench's own macOS account.

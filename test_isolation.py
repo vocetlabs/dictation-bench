@@ -1,6 +1,8 @@
-"""Tests for host-run safety (isolation.py, bench.py): the owner's app state is set aside and put back
-exactly, preference reads are strict, signals restore, setup never overwrites by default, runs are scored
-only under their profile's settings, and a failed smoke test prints counts only. Fakes only, no macOS."""
+"""Tests for host-run safety (isolation.py, bench.py, macos.py): host runs only in the bench's Standard
+account, app state cleared only inside its home, one host run at a time, signals held during a restore, apps
+quit by PID from the bench folder only, the scratch document matched by exact path, strict preference reads,
+setup never overwrites by default, runs scored only under their profile's settings, and a failed smoke test
+prints counts only. Fakes only, no macOS."""
 import json
 import os
 import pathlib
@@ -17,91 +19,91 @@ import harness as hn  # noqa: E402
 import isolation as iso  # noqa: E402
 
 
-class FakeDefaults:
-    """`defaults` for a few domains: read, export, delete, import, as plist bytes."""
+class AccountTests(unittest.TestCase):
+    def test_host_runs_only_as_the_bench_user_and_never_as_an_admin(self):
+        old = os.environ.pop("BENCH_USER", None)
+        try:
+            iso.check_bench_account("vocetbench", {"staff", "everyone"})
+            with self.assertRaisesRegex(SystemExit, "only in the bench's own macOS account"):
+                iso.check_bench_account("owner", {"staff"})
+            with self.assertRaisesRegex(SystemExit, "administrator"):
+                iso.check_bench_account("vocetbench", {"staff", "admin"})
+            os.environ["BENCH_USER"] = "otherbench"
+            iso.check_bench_account("otherbench", {"staff"})
+            with self.assertRaises(SystemExit):
+                iso.check_bench_account("vocetbench", {"staff"})
+        finally:
+            os.environ.pop("BENCH_USER", None)
+            if old is not None:
+                os.environ["BENCH_USER"] = old
 
-    def __init__(self, domains=None):
-        import plistlib
-        self.plistlib, self.domains = plistlib, dict(domains or {})
+    def test_host_run_and_restore_host_check_the_account_first(self):
+        orig = iso.check_bench_account
 
-    def export(self, domain):
-        return self.plistlib.dumps(self.domains[domain]) if domain in self.domains else None
+        def refuse(*_a, **_k):
+            raise SystemExit("not the bench account")
+        iso.check_bench_account = refuse
+        try:
+            with self.assertRaisesRegex(SystemExit, "not the bench account"):
+                bench.restore_host()
+            with self.assertRaisesRegex(SystemExit, "not the bench account"):
+                bench.main(["host-run", "--jobs", "handy:shipped"])
+        finally:
+            iso.check_bench_account = orig
 
-    def run(self, cmd, **_):
-        op, domain = cmd[1], cmd[2]
-        if op == "delete":
-            self.domains.pop(domain, None)
-        elif op == "import":
-            self.domains[domain] = self.plistlib.loads(pathlib.Path(cmd[3]).read_bytes())
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+class ClearStateTests(unittest.TestCase):
+    def test_state_is_deleted_inside_home_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = pathlib.Path(d) / "home"
+            data = home / "Library" / "Application Support" / "com.example"
+            (data / "models").mkdir(parents=True)
+            (data / "models" / "m.bin").write_bytes(b"m")
+            calls = []
+            run = lambda cmd: calls.append(cmd) or SimpleNamespace(returncode=1, stderr="Domain (x) not found. does not exist")  # noqa: E731
+            iso.clear_state([str(data), str(home / "never-existed")], ["com.example"], home=str(home), run=run)
+            self.assertFalse(data.exists())
+            self.assertEqual(calls, [["defaults", "delete", "com.example"]])
+            outside = pathlib.Path(d) / "Applications" / "X.app"
+            outside.mkdir(parents=True)
+            with self.assertRaisesRegex(SystemExit, "isn't inside this account's home"):
+                iso.clear_state([str(outside)], [], home=str(home), run=run)
+            with self.assertRaisesRegex(SystemExit, "isn't inside"):
+                iso.clear_state([str(home / ".." / "Applications" / "X.app")], [], home=str(home), run=run)
+            self.assertTrue(outside.exists())
+
+    def test_a_symlink_is_removed_never_followed(self):
+        with tempfile.TemporaryDirectory() as d:
+            home, target = pathlib.Path(d) / "home", pathlib.Path(d) / "elsewhere"
+            home.mkdir()
+            target.mkdir()
+            (target / "keep").write_text("x")
+            link = home / "link"
+            link.symlink_to(target)
+            iso.clear_state([str(link)], [], home=str(home), run=lambda cmd: SimpleNamespace(returncode=0))
+            self.assertFalse(link.is_symlink())
+            self.assertTrue((target / "keep").exists())
+
+    def test_a_failed_preference_delete_stops_the_job(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaisesRegex(SystemExit, "couldn't clear"):
+                iso.clear_state([], ["com.x"], home=d,
+                                run=lambda cmd: SimpleNamespace(returncode=1, stderr="cfprefsd not responding"))
 
 
-class AppStateTests(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.TemporaryDirectory()
-        self.d = pathlib.Path(self.dir.name)
-        self.data = self.d / "Application Support" / "com.example"
-        (self.data / "models").mkdir(parents=True)
-        (self.data / "settings.json").write_text('{"mine": true}')
-        (self.data / "models" / "big.gguf").write_bytes(b"m" * 4096)
-        self.inode = (self.data / "models" / "big.gguf").stat().st_ino
-        self.prefs = FakeDefaults({"com.example": {"Key": "owner", "Flag": True}})
-
-    def tearDown(self):
-        self.dir.cleanup()
-
-    def state(self):
-        return iso.AppState("example", [str(self.data), str(self.d / "never-existed")], ["com.example", "com.absent"],
-                            self.d / "stash", export=self.prefs.export, run=self.prefs.run)
-
-    def test_the_owners_state_comes_back_byte_for_byte_and_the_benchs_is_gone(self):
-        st = self.state()
-        st.save()
-        self.assertFalse(self.data.exists())
-        self.assertNotIn("com.example", self.prefs.domains)
-        # the bench's job writes its own state
-        self.data.mkdir(parents=True)
-        (self.data / "settings.json").write_text('{"bench": true}')
-        (self.d / "never-existed").write_text("bench")
-        self.prefs.domains["com.example"] = {"Key": "bench"}
-        self.prefs.domains["com.absent"] = {"X": 1}
-        st.restore()
-        self.assertEqual((self.data / "settings.json").read_text(), '{"mine": true}')
-        self.assertEqual((self.data / "models" / "big.gguf").stat().st_ino, self.inode)  # moved, never copied
-        self.assertFalse((self.d / "never-existed").exists())
-        self.assertEqual(self.prefs.domains, {"com.example": {"Key": "owner", "Flag": True}})
-        self.assertFalse((self.d / "stash" / "manifest.json").exists())
-
-    def test_a_crashed_job_is_finished_by_a_new_process_from_the_stash(self):
-        self.state().save()
-        self.data.mkdir(parents=True)  # the bench's leftovers
-        iso.AppState("example", [], [], self.d / "stash", export=self.prefs.export, run=self.prefs.run).restore()
-        self.assertEqual((self.data / "settings.json").read_text(), '{"mine": true}')
-        self.assertEqual(self.prefs.domains["com.example"]["Key"], "owner")
-
-    def test_an_unfinished_stash_blocks_a_new_job_and_restore_is_idempotent(self):
-        st = self.state()
-        st.save()
-        with self.assertRaisesRegex(iso.RestoreError, "unfinished"):
-            self.state().save()
-        st.restore()
-        st.restore()  # nothing left to do
-        self.assertTrue(self.data.exists())
-
-    def test_a_restore_that_doesnt_match_is_reported(self):
-        st = self.state()
-        st.save()
-        original_import = self.prefs.run
-
-        def broken(cmd, **kw):
-            r = original_import(cmd, **kw)
-            if cmd[1] == "import":
-                self.prefs.domains[cmd[2]] = {"Key": "changed"}
-            return r
-        st.run = broken
-        with self.assertRaisesRegex(iso.RestoreError, "not as they were"):
-            st.restore()
-
+class LockTests(unittest.TestCase):
+    def test_one_host_run_or_restore_at_a_time(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            lock = pathlib.Path(d) / "host.lock"
+            with iso.host_lock(lock):
+                other = subprocess.run([sys.executable, "-c", "import sys, isolation; "
+                                        "exec('with isolation.host_lock(__import__(\"pathlib\").Path(sys.argv[1])): pass')",
+                                        str(lock)], cwd=HERE, capture_output=True, text=True)
+                self.assertNotEqual(other.returncode, 0)
+                self.assertIn("another host-run or restore-host", other.stderr)
+            with iso.host_lock(lock):  # released
+                pass
 
 class PrefTests(unittest.TestCase):
     def test_absent_only_when_defaults_says_so(self):
@@ -113,18 +115,24 @@ class PrefTests(unittest.TestCase):
         with self.assertRaises(iso.RestoreError):
             iso.read_pref("K", run=failed)
 
-    def test_writes_are_checked(self):
-        calls = []
-        ok = lambda cmd: calls.append(cmd) or SimpleNamespace(returncode=0, stderr="")  # noqa: E731
-        iso.write_bool_pref("K", "1", run=ok)
-        iso.write_bool_pref("K", None, run=ok)
-        self.assertEqual([c[1] for c in calls], ["write", "delete"])
-        self.assertEqual(calls[0][-1], "true")
-        with self.assertRaises(iso.RestoreError):
-            iso.write_bool_pref("K", "0", run=lambda cmd: SimpleNamespace(returncode=1, stderr="denied"))
-
 
 class SignalTests(unittest.TestCase):
+    def test_signals_wait_while_a_restore_runs_then_stop_the_run(self):
+        old = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+        try:
+            iso.on_termination()
+            done = []
+            with self.assertRaises(SystemExit):
+                with iso.signals_held():
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    for _ in range(1000):
+                        pass
+                    done.append("restored")  # not cut off
+            self.assertEqual(done, ["restored"])
+        finally:
+            for s, h in old.items():
+                signal.signal(s, h)
+
     def test_sigterm_and_sighup_end_the_run_through_finally(self):
         old = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
         try:
@@ -239,6 +247,44 @@ class BindingTests(unittest.TestCase):
                 macos.mic_decision(capturing, app_tree)
 
 
+class QuitTests(unittest.TestCase):
+    """Apps are quit by PID, only the processes launched from the bench's folder; never by name."""
+
+    def test_quit_signals_only_the_bench_tree_by_pid(self):
+        import macos
+        rows = list(BindingTests.ROWS)
+        sent = []
+
+        def kill(pid, sig):
+            sent.append((pid, sig))
+            rows[:] = [r for r in rows if r[0] != pid]
+        macos.quit_tree("/bench/work/Applications/", rows=lambda: rows, kill=kill)
+        self.assertEqual(sorted(p for p, _ in sent), [10, 11, 12])
+        self.assertEqual([r[0] for r in rows], [20])  # the /Applications copy is untouched
+
+    def test_a_copy_outside_the_bench_folder_is_reported_not_quit(self):
+        import macos
+        self.assertEqual(macos.foreign_copies(BindingTests.ROWS, {"Vocet"}, "/bench/work/Applications/"),
+                         ["/Applications/Vocet.app/Contents/MacOS/Vocet"])
+
+    def test_installs_always_go_to_the_benchs_own_folder(self):
+        import macos
+        os.environ["BENCH_APPS"] = "/Applications"
+        try:
+            self.assertEqual(macos.apps_dir(), HERE / "work" / "Applications")
+        finally:
+            del os.environ["BENCH_APPS"]
+        self.assertNotIn("BENCH_APPS", (HERE / "apps" / "common.sh").read_text())
+
+    def test_the_scratch_document_is_matched_by_its_exact_path(self):
+        import macos
+        scratch = HERE / "work" / "scratch.txt"
+        self.assertTrue(macos.is_document(scratch.as_uri(), scratch))
+        for other in (None, "", (HERE / "work" / "scratch.txt copy").as_uri(),
+                      pathlib.Path("/Users/owner/Documents/scratch.txt").as_uri(), "https://x/scratch.txt"):
+            self.assertFalse(macos.is_document(other, scratch), other)
+
+
 class ExpectedTests(unittest.TestCase):
     def test_expected_absences_and_the_pinned_ollama_digest(self):
         with tempfile.TemporaryDirectory() as d:
@@ -247,25 +293,27 @@ class ExpectedTests(unittest.TestCase):
             self.assertEqual(bench.settings_problems(a)[1], [])
             gemma.write_bytes(b"x")
             self.assertIn("must be absent", bench.settings_problems(a)[1][0])
-        b = app(model={"id": "m", "cleanup_ollama": "gemma3:4b", "cleanup_ollama_digest": "sha256:68ceab7e468a31c9"})
-        orig = bench.ollama_id
+        full = "sha256:68ceab7e468a31c988b44d5a4984a0e21f58c4f7158c6ce29c1804babac38df7"
+        b = app(model={"id": "m", "cleanup_ollama": "gemma3:4b", "cleanup_ollama_digest": full})
+        orig = bench.ollama_digest
         try:
-            bench.ollama_id = lambda m: "68ceab7e468a"
+            bench.ollama_digest = lambda m: full
             self.assertEqual(bench.settings_problems(b)[1], [])
-            bench.ollama_id = lambda m: "0123456789ab"
+            bench.ollama_digest = lambda m: full[:-1] + "0"  # the same 12-hex prefix, another model
             self.assertIn("not the pinned", bench.settings_problems(b)[1][0])
-            bench.ollama_id = lambda m: None
+            bench.ollama_digest = lambda m: None
             self.assertIn("isn't installed", bench.settings_problems(b)[1][0])
         finally:
-            bench.ollama_id = orig
-        listing = SimpleNamespace(stdout="NAME ID SIZE MODIFIED\ngemma3:4b 68ceab7e468a 3.3 GB now\n")
-        self.assertEqual(bench.ollama_id("gemma3:4b", run=lambda *a, **k: listing), "68ceab7e468a")
+            bench.ollama_digest = orig
+        tags = json.dumps({"models": [{"name": "gemma3:4b", "model": "gemma3:4b", "digest": full[7:]}]})
+        self.assertEqual(bench.ollama_digest("gemma3:4b", fetch=lambda: tags), full)
+        self.assertIsNone(bench.ollama_digest("qwen3:4b", fetch=lambda: tags))
 
     def test_the_profiles_pin_what_they_expect(self):
         gemma = "models/gemma-4-E2B-it-Q4_K_M.gguf"
         self.assertTrue(any(f.endswith(gemma) for f in bench.app_config("vocet:best-asr").absent_files))
         for n in ("handy:local-cleanup", "fluidvoice:local-cleanup"):
-            self.assertTrue(bench.app_config(n).model["cleanup_ollama_digest"].startswith("sha256:68ceab7e468a"))
+            self.assertRegex(bench.app_config(n).model["cleanup_ollama_digest"], r"^sha256:[0-9a-f]{64}$")
 
 
 class SetupTests(unittest.TestCase):
